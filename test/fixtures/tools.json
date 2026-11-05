@@ -1,0 +1,815 @@
+{
+  "jj": {
+    "instructions": "Read-only access to the jj (Jujutsu) repo in this server's working directory. Use it to inspect any revision without checking it out.\n\nEvery jj call runs with --ignore-working-copy, so `@` is the working copy as of its last snapshot and may be stale. Prefer change IDs, bookmarks or other revsets to `@`.\n\nArguments:\n- `revset`: a jj revset (jj_help topic `revsets`).\n- `revision`: a revset that must match a single change.\n- `paths`: fileset expressions (jj_help topic `filesets`). Plain paths work, but a path with special characters such as `(`, `)`, `~`, `&`, `|` or spaces must be double-quoted inside the string, e.g. `\"app/(auth)/page.tsx\"`.\n- `template`: a jj template (jj_help topic `templates`).\n\nEach result starts with the exact command run (`$ jj ...`), then jj's stdout and stderr. If jj fails, the result is an error and ends with `exit code: N`.\n\nSuggested review flow, passing the change under review as `revset`/`revision`:\n1. jj_show for its description and changed files.\n2. jj_diff with `paths` to read the diff a file or directory at a time.\n3. jj_file_show to read whole files at that revision for context.\n\nTips:\n- To review a branch's own changes, use jj_diff_range with `from: \"fork_point(trunk() | <branch>)\"` and `to: \"<branch>\"`. `from: \"trunk()\"` also shows trunk's newer commits as reverted, and jj_diff `trunk()..<branch>` fails if the branch merged trunk.",
+    "tools": [
+      {
+        "server": "jj",
+        "name": "jj_bookmark_list",
+        "description": "List bookmarks and their targets (`jj bookmark list`).",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "all_remotes": {
+              "default": false,
+              "description": "Also show remote bookmarks, including untracked ones and ones in sync\nwith their local bookmark.",
+              "type": "boolean"
+            },
+            "names": {
+              "default": [],
+              "description": "Only show bookmarks whose name matches one of these string patterns\n(glob by default).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "revset": {
+              "description": "Only show bookmarks pointing at commits in this revset.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "template": {
+              "description": "Template for each bookmark.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "jj",
+        "name": "jj_diff",
+        "description": "Show the changes made in a revset (`jj diff --revisions`), in git format unless `stat`, `summary` or `name_only` is set. Use `paths` to keep the output small.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "context": {
+              "description": "Lines of context around each change in the patch.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name_only": {
+              "default": false,
+              "description": "Show only the changed file names. Only one of `stat`, `summary` and\n`name_only` can be set.",
+              "type": "boolean"
+            },
+            "paths": {
+              "default": [],
+              "description": "Only show changes to these filesets.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "revset": {
+              "description": "Revset whose changes to show. Several revisions are shown as one\ncombined diff.",
+              "type": "string"
+            },
+            "stat": {
+              "default": false,
+              "description": "Show a diffstat instead of the patch. Only one of `stat`, `summary`\nand `name_only` can be set.",
+              "type": "boolean"
+            },
+            "summary": {
+              "default": false,
+              "description": "Show changed files with their status (A/M/D) instead of the patch.\nOnly one of `stat`, `summary` and `name_only` can be set.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "revset"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "jj",
+        "name": "jj_diff_range",
+        "description": "Show the difference between the trees of two revisions (`jj diff --from --to`), in git format unless `stat`, `summary` or `name_only` is set.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "context": {
+              "description": "Lines of context around each change in the patch.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "from": {
+              "description": "Revision to diff from.",
+              "type": "string"
+            },
+            "name_only": {
+              "default": false,
+              "description": "Show only the changed file names. Only one of `stat`, `summary` and\n`name_only` can be set.",
+              "type": "boolean"
+            },
+            "paths": {
+              "default": [],
+              "description": "Only show changes to these filesets.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "stat": {
+              "default": false,
+              "description": "Show a diffstat instead of the patch. Only one of `stat`, `summary`\nand `name_only` can be set.",
+              "type": "boolean"
+            },
+            "summary": {
+              "default": false,
+              "description": "Show changed files with their status (A/M/D) instead of the patch.\nOnly one of `stat`, `summary` and `name_only` can be set.",
+              "type": "boolean"
+            },
+            "to": {
+              "description": "Revision to diff to.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "from",
+            "to"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "jj",
+        "name": "jj_evolog",
+        "description": "Show how changes evolved (`jj evolog`): their earlier versions from rewrites such as amends and rebases.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "description": "Show at most this many versions.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "no_graph": {
+              "default": false,
+              "description": "Show a flat list instead of a graph.",
+              "type": "boolean"
+            },
+            "patch": {
+              "default": false,
+              "description": "Show the patch between each version and the one before (git format).",
+              "type": "boolean"
+            },
+            "revset": {
+              "description": "Revset whose history to show.",
+              "type": "string"
+            },
+            "template": {
+              "description": "Template for each version. Keywords are on `commit`, e.g.\n`commit.commit_id()`, not `commit_id`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "revset"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "jj",
+        "name": "jj_file_annotate",
+        "description": "Show the change that last modified each line of a file at a revision (`jj file annotate`, like `git blame`).",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "Path of one file (a literal path, not a fileset).",
+              "type": "string"
+            },
+            "revision": {
+              "description": "Revision to annotate the file at.",
+              "type": "string"
+            },
+            "template": {
+              "description": "Template for each line.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "revision",
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "jj",
+        "name": "jj_file_list",
+        "description": "List the files at a revision (`jj file list`).",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "paths": {
+              "default": [],
+              "description": "Only list files matching these filesets.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "revision": {
+              "description": "Revision to list the files at.",
+              "type": "string"
+            },
+            "template": {
+              "description": "Template for each file.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "revision"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "jj",
+        "name": "jj_file_search",
+        "description": "Search file contents at a revision (`jj file search`). Prints matching lines with their line numbers, or only file names if `name_only` is set.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "ignore_case": {
+              "default": false,
+              "description": "Match case-insensitively.",
+              "type": "boolean"
+            },
+            "kind": {
+              "default": "regex",
+              "description": "`regex` (the default) matches anywhere in the line, `substring` matches\nplain text anywhere in the line, `exact` must equal the whole line, and\n`glob` must match the whole line (e.g. `*foo*`).",
+              "enum": [
+                "exact",
+                "glob",
+                "regex",
+                "substring"
+              ],
+              "type": "string"
+            },
+            "name_only": {
+              "default": false,
+              "description": "Print only the names of matching files, not the matching lines.",
+              "type": "boolean"
+            },
+            "paths": {
+              "default": [],
+              "description": "Only search files matching these filesets.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pattern": {
+              "description": "Text to match against each line, used as-is. Set the kind with `kind`,\nnot a `kind:` prefix.",
+              "type": "string"
+            },
+            "revision": {
+              "description": "Revision to search at.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "revision",
+            "pattern"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "jj",
+        "name": "jj_file_show",
+        "description": "Print the contents of files at a revision (`jj file show`). When more than one path is passed each file is preceded by a `==> path <==` header, unless `template` is set.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "paths": {
+              "description": "Filesets to print.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "revision": {
+              "description": "Revision to read the files at.",
+              "type": "string"
+            },
+            "template": {
+              "description": "Template for each file's header.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "revision",
+            "paths"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "jj",
+        "name": "jj_help",
+        "description": "Show jj's help on a topic (`jj help --keyword`). Topics: bookmarks, config, filesets, glossary, revsets, templates, tutorial.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "topic": {
+              "description": "One of `bookmarks`, `config`, `filesets`, `glossary`, `revsets`,\n`templates`, `tutorial`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "topic"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "jj",
+        "name": "jj_interdiff",
+        "description": "Compare the changes made by two revisions (`jj interdiff --from --to`): the difference between their patches, not their trees. Useful to see what changed between two versions of a change, e.g. across a rebase. In git format unless `stat`, `summary` or `name_only` is set.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "context": {
+              "description": "Lines of context around each change in the patch.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "from": {
+              "description": "Revision to diff from.",
+              "type": "string"
+            },
+            "name_only": {
+              "default": false,
+              "description": "Show only the changed file names. Only one of `stat`, `summary` and\n`name_only` can be set.",
+              "type": "boolean"
+            },
+            "paths": {
+              "default": [],
+              "description": "Only show changes to these filesets.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "stat": {
+              "default": false,
+              "description": "Show a diffstat instead of the patch. Only one of `stat`, `summary`\nand `name_only` can be set.",
+              "type": "boolean"
+            },
+            "summary": {
+              "default": false,
+              "description": "Show changed files with their status (A/M/D) instead of the patch.\nOnly one of `stat`, `summary` and `name_only` can be set.",
+              "type": "boolean"
+            },
+            "to": {
+              "description": "Revision to diff to.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "from",
+            "to"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "jj",
+        "name": "jj_list_remotes",
+        "description": "List the git remotes and their URLs (`jj git remote list`). Use it to find the hosting repo, e.g. the GitHub `owner/repo` for looking up a branch's pull request.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "server": "jj",
+        "name": "jj_log",
+        "description": "Show the commits in a revset (`jj log`), optionally with each commit's patch, changed files or diffstat. `@` may be stale: the working copy is not snapshotted.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "description": "Show at most this many commits.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "no_graph": {
+              "default": false,
+              "description": "Show a flat list instead of a graph.",
+              "type": "boolean"
+            },
+            "patch": {
+              "default": false,
+              "description": "Show each commit's patch (git format).",
+              "type": "boolean"
+            },
+            "reversed": {
+              "default": false,
+              "description": "Show the oldest commits first.",
+              "type": "boolean"
+            },
+            "revset": {
+              "description": "Revset to show. Defaults to jj's `revsets.log` config.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stat": {
+              "default": false,
+              "description": "Show each commit's diffstat. Can't be combined with `summary`.",
+              "type": "boolean"
+            },
+            "summary": {
+              "default": false,
+              "description": "Show each commit's changed files. Can't be combined with `stat`.",
+              "type": "boolean"
+            },
+            "template": {
+              "description": "Template for each commit.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "jj",
+        "name": "jj_show",
+        "description": "Show a revision's description and a diffstat of its changed files (`jj show --stat`). Use jj_diff for the patch.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "revset": {
+              "description": "Revset to show.",
+              "type": "string"
+            },
+            "template": {
+              "description": "Template for the commit header.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "revset"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "jj",
+        "name": "jj_status",
+        "description": "Show the working copy's status (`jj status`). The working copy is not snapshotted, so this is its state at the last snapshot and may be stale.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    ]
+  },
+  "psql": {
+    "instructions": "This server gives a read-only view of the schema of the Postgres DB selected by libpq's environment (PGDATABASE, PGHOST, PGPORT, PGUSER, PGSERVICE and related settings). It runs fixed psql commands; there is no free-form SQL tool. PGOPTIONS is ignored.\n\nNames are exact and case-sensitive: copy them from the list tools. Don't schema-qualify names: public.users is quoted as one identifier and won't be found. Lists only show objects visible in search_path.\n\nFor psql_function_source, copy the arg types from psql_list_functions into args. Use \"\" for a zero-arg function like foo(). Omit args only when the function name is unambiguous.\n\nSuggested flow: psql_list_tables → psql_describe → psql_list_enums / psql_list_functions → psql_function_source. Use verbose: true with psql_describe to include view definitions, column comments and storage.",
+    "tools": [
+      {
+        "server": "psql",
+        "name": "psql_describe",
+        "description": "Describe a table, view, materialized view, index or sequence (psql \\d). Names are exact and case-sensitive; copy from psql_list_tables.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "description": "Exact relation name, without a schema prefix.",
+              "type": "string"
+            },
+            "verbose": {
+              "description": "Include view definitions, column comments and storage.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "psql",
+        "name": "psql_function_source",
+        "description": "Show a function's or procedure's CREATE statement (psql \\sf). Copy arg types from psql_list_functions into args to select an overload.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "args": {
+              "description": "Argument types from `psql_list_functions`. Use \"\" for a zero-arg overload.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "Exact function or procedure name, without a schema prefix.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "psql",
+        "name": "psql_list_enums",
+        "description": "List visible enums with their values in sort order.",
+        "inputSchema": {
+          "type": "object",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "psql",
+        "name": "psql_list_functions",
+        "description": "List visible functions and procedures with argument types and results, excluding aggregates and extension members.",
+        "inputSchema": {
+          "type": "object",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      },
+      {
+        "server": "psql",
+        "name": "psql_list_tables",
+        "description": "List visible tables, views, materialized views and foreign tables, excluding partitions and extension members.",
+        "inputSchema": {
+          "type": "object",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "github": {
+    "instructions": "The GitHub MCP Server provides tools to interact with GitHub platform.\n\nTool selection guidance:\n\t1. Use 'list_*' tools for broad, simple retrieval and pagination of all items of a type (e.g., all issues, all PRs, all branches) with basic filtering.\n\t2. Use 'search_*' tools for targeted queries with specific criteria, keywords, or complex filters (e.g., issues with certain text, PRs by author, code containing functions).\n\nContext management:\n\t1. Use pagination whenever possible with batches of 5-10 items.\n\t2. Use minimal_output parameter set to true if the full information is not needed to accomplish a task.\n\nTool usage guidance:\n\t1. For 'search_*' tools: Use separate 'sort' and 'order' parameters if available for sorting results - do not include 'sort:' syntax in query strings. Query strings should contain only search criteria (e.g., 'org:google language:python'), not sorting instructions. Always call 'get_me' first to understand current user permissions and context. ## Issues\n\nCheck 'list_issue_types' first for organizations to use proper issue types. Use 'search_issues' before creating new issues to avoid duplicates. Always set 'state_reason' when closing issues. ## Pull Requests\n\nPR review workflow: Always use 'pull_request_review_write' with method 'create' to create a pending review, then 'add_comment_to_pending_review' to add comments, and finally 'pull_request_review_write' with method 'submit_pending' to submit the review for complex reviews with line-specific comments.\n\nBefore creating a pull request, search for pull request templates in the repository. Template files are called pull_request_template.md or they're located in '.github/PULL_REQUEST_TEMPLATE' directory. Use the template content to structure the PR description and then call create_pull_request tool.",
+    "tools": [
+      {
+        "server": "github",
+        "name": "add_comment_to_pending_review",
+        "description": "Add review comment to the requester's latest pending pull request review. A pending review needs to already exist to call this (check with the user if not sure).",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "body": {
+              "type": "string",
+              "description": "The text of the review comment"
+            },
+            "line": {
+              "type": "number",
+              "description": "The line of the blob in the pull request diff that the comment applies to. For multi-line comments, the last line of the range"
+            },
+            "owner": {
+              "type": "string",
+              "description": "Repository owner",
+              "x-mcp-header": "owner"
+            },
+            "path": {
+              "type": "string",
+              "description": "The relative path to the file that necessitates a comment"
+            },
+            "pullNumber": {
+              "type": "number",
+              "description": "Pull request number"
+            },
+            "repo": {
+              "type": "string",
+              "description": "Repository name",
+              "x-mcp-header": "repo"
+            },
+            "side": {
+              "type": "string",
+              "description": "The side of the diff to comment on. LEFT indicates the previous state, RIGHT indicates the new state",
+              "enum": [
+                "LEFT",
+                "RIGHT"
+              ]
+            },
+            "startLine": {
+              "type": "number",
+              "description": "For multi-line comments, the first line of the range that the comment applies to"
+            },
+            "startSide": {
+              "type": "string",
+              "description": "For multi-line comments, the starting side of the diff that the comment applies to. LEFT indicates the previous state, RIGHT indicates the new state",
+              "enum": [
+                "LEFT",
+                "RIGHT"
+              ]
+            },
+            "subjectType": {
+              "type": "string",
+              "description": "The level at which the comment is targeted",
+              "enum": [
+                "FILE",
+                "LINE"
+              ]
+            }
+          },
+          "required": [
+            "owner",
+            "repo",
+            "pullNumber",
+            "path",
+            "body",
+            "subjectType"
+          ]
+        }
+      },
+      {
+        "server": "github",
+        "name": "pull_request_read",
+        "description": "Get information on a specific pull request in GitHub repository.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "after": {
+              "type": "string",
+              "description": "Cursor for pagination, used only by the get_review_comments method. Pass the endCursor from the previous page's PageInfo to fetch the next page."
+            },
+            "method": {
+              "type": "string",
+              "description": "Action to specify what pull request data needs to be retrieved from GitHub. \nPossible options: \n 1. get - Get details of a specific pull request.\n 2. get_diff - Get the diff of a pull request.\n 3. get_status - Get combined commit status of a head commit in a pull request.\n 4. get_files - Get the list of files changed in a pull request. Use with pagination parameters to control the number of results returned.\n 5. get_commits - Get the list of commits on a pull request. Use with pagination parameters to control the number of results returned.\n 6. get_review_comments - Get review threads on a pull request. Each thread contains logically grouped review comments made on the same code location during pull request reviews. Returns thread metadata and comments with nullable current and original line-range coordinates (line, start_line, original_line, original_start_line). Current coordinates are omitted when unavailable, such as for outdated comments. Use cursor-based pagination (perPage, after) to control results.\n 7. get_reviews - Get the reviews on a pull request. When asked for review comments, use get_review_comments method. Use with pagination parameters to control the number of results returned.\n 8. get_comments - Get comments on a pull request. Use this if user doesn't specifically want review comments. Use with pagination parameters to control the number of results returned.\n 9. get_check_runs - Get check runs for the head commit of a pull request. Check runs are the individual CI/CD jobs and checks that run on the PR.\n",
+              "enum": [
+                "get",
+                "get_diff",
+                "get_status",
+                "get_files",
+                "get_commits",
+                "get_review_comments",
+                "get_reviews",
+                "get_comments",
+                "get_check_runs"
+              ]
+            },
+            "owner": {
+              "type": "string",
+              "description": "Repository owner",
+              "x-mcp-header": "owner"
+            },
+            "page": {
+              "type": "number",
+              "description": "Page number for pagination (min 1)",
+              "minimum": 1
+            },
+            "perPage": {
+              "type": "number",
+              "description": "Results per page for pagination (min 1, max 100)",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "pullNumber": {
+              "type": "number",
+              "description": "Pull request number"
+            },
+            "repo": {
+              "type": "string",
+              "description": "Repository name",
+              "x-mcp-header": "repo"
+            }
+          },
+          "required": [
+            "method",
+            "owner",
+            "repo",
+            "pullNumber"
+          ]
+        }
+      },
+      {
+        "server": "github",
+        "name": "pull_request_review_write",
+        "description": "Create and/or submit, delete review of a pull request.\n\nAvailable methods:\n- create: Create a new review of a pull request. If \"event\" parameter is provided, the review is submitted. If \"event\" is omitted, a pending review is created.\n- submit_pending: Submit an existing pending review of a pull request. This requires that a pending review exists for the current user on the specified pull request. The \"body\" and \"event\" parameters are used when submitting the review.\n- delete_pending: Delete an existing pending review of a pull request. This requires that a pending review exists for the current user on the specified pull request.\n- resolve_thread: Resolve a review thread. Requires only \"threadId\" parameter with the thread's node ID (e.g., PRRT_kwDOxxx). The owner, repo, and pullNumber parameters are not used for this method. Resolving an already-resolved thread is a no-op.\n- unresolve_thread: Unresolve a previously resolved review thread. Requires only \"threadId\" parameter. The owner, repo, and pullNumber parameters are not used for this method. Unresolving an already-unresolved thread is a no-op.\n",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "body": {
+              "type": "string",
+              "description": "Review comment text"
+            },
+            "commitID": {
+              "type": "string",
+              "description": "SHA of commit to review"
+            },
+            "event": {
+              "type": "string",
+              "description": "Review action to perform.",
+              "enum": [
+                "APPROVE",
+                "REQUEST_CHANGES",
+                "COMMENT"
+              ]
+            },
+            "method": {
+              "type": "string",
+              "description": "The write operation to perform on pull request review.",
+              "enum": [
+                "create",
+                "submit_pending",
+                "delete_pending",
+                "resolve_thread",
+                "unresolve_thread"
+              ]
+            },
+            "owner": {
+              "type": "string",
+              "description": "Repository owner",
+              "x-mcp-header": "owner"
+            },
+            "pullNumber": {
+              "type": "number",
+              "description": "Pull request number"
+            },
+            "repo": {
+              "type": "string",
+              "description": "Repository name",
+              "x-mcp-header": "repo"
+            },
+            "threadId": {
+              "type": "string",
+              "description": "The node ID of the review thread (e.g., PRRT_kwDOxxx). Required for resolve_thread and unresolve_thread methods. Get thread IDs from pull_request_read with method get_review_comments."
+            }
+          },
+          "required": [
+            "method",
+            "owner",
+            "repo",
+            "pullNumber"
+          ]
+        }
+      }
+    ]
+  }
+}
