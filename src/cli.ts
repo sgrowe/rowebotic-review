@@ -9,7 +9,7 @@ import { reviewPr } from './review.ts'
 import { Watcher } from './watch.ts'
 
 const usage = `usage:
-  rowebotic-review login          sign in with your ChatGPT account (device code)
+  rowebotic-review login          sign in with your ChatGPT account (browser)
   rowebotic-review review <pr>    review one PR of the current repo and post the review
   rowebotic-review watch          review matching PRs one at a time
 

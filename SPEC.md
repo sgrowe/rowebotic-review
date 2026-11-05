@@ -15,7 +15,7 @@ Run from the root of the repo under review.
 
 | Command                         | What it does                                                                     |
 | ------------------------------- | -------------------------------------------------------------------------------- |
-| `rowebotic-review login`        | ChatGPT device-code login. Stores tokens in `~/.rowebotic-review/auth.json`.     |
+| `rowebotic-review login`        | ChatGPT browser login. Stores tokens in `~/.rowebotic-review/auth.json`.         |
 | `rowebotic-review review <pr>`  | Reviews one PR of the current repo and posts a `COMMENT` review.                 |
 | `rowebotic-review watch`        | Reviews matching PRs one at a time, forever.                                     |
 
@@ -59,7 +59,7 @@ Request body. Everything except `input` is constant for an agent:
 
 ### Login and tokens
 
-- Device-code flow with the Codex CLI's client id `app_EMoamEEZ73f0CkXaXp7hrann`: POST `auth.openai.com/api/accounts/deviceauth/usercode`, the user enters the code at `https://auth.openai.com/codex/device`, poll `.../deviceauth/token` (403/404 = pending), then exchange the code at `auth.openai.com/oauth/token` with `redirect_uri=https://auth.openai.com/deviceauth/callback`.
+- Browser OAuth (authorization code + PKCE) with the Codex CLI's client id `app_EMoamEEZ73f0CkXaXp7hrann`, as pi and the Codex CLI do. `login` prints the `auth.openai.com/oauth/authorize` URL, opens it with `open`, and waits for the redirect on a loopback server at `http://localhost:1455/auth/callback` (the `state` must match). If the port is taken (the Codex CLI uses it too) or the browser can't reach it (SSH), paste the redirect URL or code on stdin instead. 15-minute timeout. The code is exchanged at `auth.openai.com/oauth/token` with the same `redirect_uri`.
 - `~/.rowebotic-review/auth.json` (mode 0600) holds `access`, `refresh`, `expires` and `accountId`. The account id is the JWT claim `["https://api.openai.com/auth"].chatgpt_account_id`.
 - The SDK's `apiKey` is an async callback. It refreshes the token when less than 5 minutes are left.
 - Refresh is single-flight: concurrent callers share one promise, because OpenAI rotates refresh tokens. Before refreshing it re-reads `auth.json`, in case another process refreshed first. The new tokens are written atomically (temp file + rename).
@@ -231,7 +231,7 @@ At the end: the posted flag, new findings ranked by severity, remaining issues, 
 | File                     | Role                                                                          |
 | ------------------------ | ----------------------------------------------------------------------------- |
 | `src/cli.ts`             | Arg parsing, wiring, SIGINT                                                   |
-| `src/auth.ts`            | Device-code login, token store, refresh, account id                          |
+| `src/auth.ts`            | Browser login (PKCE), token store, refresh, account id                       |
 | `src/model.ts`           | Client, streamed call, idle timeout, error classifier, retry loop, usage      |
 | `src/agent.ts`           | Agent loop: input array, tool calls → codemode, final JSON, nudge             |
 | `src/codemode.ts`        | Monty pool and session, stubs from MCP schemas, kwargs, output formatting     |
