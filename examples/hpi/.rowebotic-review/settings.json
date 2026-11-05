@@ -1,0 +1,3 @@
+{
+  "search": "(label:team-nova OR review-requested:@me) draft:false"
+}
