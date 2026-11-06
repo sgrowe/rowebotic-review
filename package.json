@@ -13,7 +13,8 @@
   "scripts": {
     "check": "tsc --noEmit",
     "lint": "oxlint",
-    "test": "node --test 'test/**/*.test.ts'"
+    "test": "node --test 'test/**/*.test.ts'",
+    "install-locally": "npm install && npm link"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
