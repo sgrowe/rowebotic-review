@@ -317,19 +317,22 @@ export function createReviewFunction(options: ReviewFunctionOptions): HostFuncti
 }
 
 /**
- * The `from` revset: the merge base of the PR's base commit and head, which is
- * what GitHub diffs against. Falls back to `trunk()` when the base commit is
- * not in the local repo.
+ * The `from` revset: the fork point of the head and the PR's base branch as
+ * just fetched from origin. GitHub diffs a PR from the same merge base, so a
+ * stacked PR's diff leaves out its parent PR's changes. Falls back to
+ * `trunk()` when the base branch is not on origin, e.g. it was deleted.
  */
-async function prFrom(root: string, baseSha: string, headSha: string, signal: AbortSignal, log: (text: string) => void): Promise<string> {
-  try {
-    await run('jj', ['log', '-r', baseSha, '-T', 'commit_id', '--no-graph', '--ignore-working-copy'], { cwd: root, signal })
-    return `fork_point(${baseSha} | ${headSha})`
-  } catch (error) {
+export async function prFrom(root: string, baseRef: string, headSha: string, signal: AbortSignal, log: (text: string) => void): Promise<string> {
+  const base = `remote_bookmarks(exact:${JSON.stringify(baseRef)}, exact:"origin")`
+  // A revset that matches nothing prints nothing and exits 0.
+  const found = await run('jj', ['log', '-r', base, '-T', 'commit_id', '--no-graph', '--ignore-working-copy'], { cwd: root, signal }).catch(error => {
     if (signal.aborted) throw error
-    log(`warning: PR base ${baseSha.slice(0, 7)} not found locally, diffing from trunk(): ${describeError(error)}`)
-    return `fork_point(trunk() | ${headSha})`
-  }
+    log(`warning: ${describeError(error)}`)
+    return ''
+  })
+  if (found.trim()) return `fork_point(${base} | ${headSha})`
+  log(`warning: base branch ${baseRef} not found on origin; diffing from trunk()`)
+  return `fork_point(trunk() | ${headSha})`
 }
 
 export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
@@ -359,7 +362,7 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
     await prepare(project, runSignal, log)
     const headSha = pr.head.sha
     const changeId = (await run('jj', ['log', '-r', headSha, '-T', 'change_id', '--no-graph', '--ignore-working-copy'], { cwd: project.root, signal: runSignal })).trim()
-    const from = await prFrom(project.root, pr.base.sha, headSha, runSignal, log)
+    const from = await prFrom(project.root, pr.base.ref, headSha, runSignal, log)
     const to = headSha
     const context = await fetchContext(github, repo, pr)
 

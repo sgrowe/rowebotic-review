@@ -34,7 +34,7 @@ export type PullRequest = {
   state: string
   user: { login: string } | null
   head: { ref: string; sha: string; repo: { full_name: string } | null }
-  base: { ref: string; sha: string }
+  base: { ref: string }
 }
 
 export type Review = {

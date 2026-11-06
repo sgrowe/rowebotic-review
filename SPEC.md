@@ -30,7 +30,7 @@ Install: `npm install && npm link`. Node 24 runs the `.ts` files directly (type 
 1. Load `.rowebotic-review/` (see "Project files").
 2. Fetch the PR with `gh`. Fork PRs are not supported: the head must be in the same repo.
 3. `jj git fetch`, then run `.rowebotic-review/prepare` if it is executable. A failing `prepare` prints a warning and the run continues.
-4. Revisions: `to` is the PR head commit SHA, `from` is `fork_point(<baseSha> | <headSha>)`, the merge base GitHub diffs against (so stacked PRs exclude the parent PR's changes). If the base commit is not in the local repo, it falls back to `fork_point(trunk() | <headSha>)` with a warning, and the change ID comes from `jj log -r <sha> -T change_id --no-graph`.
+4. Revisions: `to` is the PR head commit SHA, `from` is `fork_point(remote_bookmarks(exact:"<baseRef>", exact:"origin") | <headSha>)`. That is the merge base GitHub diffs a PR from, so a stacked PR's diff leaves out its parent PR's changes. If the base branch is not on origin, `from` falls back to `fork_point(trunk() | <headSha>)` with a warning. The change ID comes from `jj log -r <sha> -T change_id --no-graph`.
 5. Fetch the GitHub context with `gh` (see "GitHub context").
 6. Start the MCP servers (one jj, one psql, one GitHub client, shared by all agents) and a Monty worker pool.
 7. Run the orchestrator. It lists the changed files, picks concerns, starts reviewers with `asyncio.gather(review(...), ...)`, verifies their findings, posts the review, and replies with a JSON summary.

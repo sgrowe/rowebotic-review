@@ -26,7 +26,7 @@ Start all reviewers in one script with `asyncio.gather`. `review()` never raises
 
 ```python
 import asyncio
-intent = "<one or two sentences on what the PR is for>"
+intent: str = "<one or two sentences on what the PR is for>"
 reviews = [
     ("bugs-server", "bugs", "app/server/**"),
     ("bugs-client", "bugs", "app/client/**"),
@@ -65,7 +65,8 @@ First build the verified new findings as a typed list, so their values keep thei
 
 ```python
 new_findings: list[NewFinding] = [
-    {"concerns": ["bugs", "design"], **f},  # f is a reviewer's Finding
+    {**finding, "concerns": ["bugs", "design"]},  # finding is a reviewer's Finding
+    {**other_finding, "concerns": ["tests"], "severity": "minor"},  # corrections go after the spread
     {"concerns": ["bugs"], "file": "app/a.ts", "line": 12, "severity": "major", "summary": "...", "evidence": "...", "scenario": None},
 ]
 ```
@@ -73,11 +74,12 @@ new_findings: list[NewFinding] = [
 `NewFinding` is a type for annotations only. Write dict literals, never `NewFinding(...)` calls.
 
 1. Call `pull_request_review_write` with `method="create"` and `commitID` set to the head commit SHA from the first message, even if the PR head has advanced. If it fails because a pending review already exists, stop: don't delete it, because it may hold someone's drafts. Reply with `reviewPosted` false.
-2. Call `add_comment_to_pending_review` once per finding, with `subjectType="LINE"`. Use `side="RIGHT"` for added or context lines and `"LEFT"` for deleted lines. For a range, also set `startLine` and `startSide`.
+2. Call `add_comment_to_pending_review` once per finding, with `subjectType="LINE"`. Use `side="RIGHT"` for added lines and `"LEFT"` for deleted lines. For a range, also set `startLine` and `startSide`.
 3. Call `pull_request_review_write` with `method="submit_pending"`, `event="COMMENT"` and the review body.
 
 Anchoring:
 
+- Anchor each comment on a line that the diff from `from` to `to` adds or deletes. GitHub rejects comments on lines outside its diff hunks, and a large `context=` can show such lines. When you correct a finding's line, keep it on a changed line.
 - A finding in a file the diff doesn't touch goes on the changed line that causes it. Name the affected `file:line` in the comment.
 - If there is no sensible changed line, post a `subjectType="FILE"` comment on the file that causes it.
 - Put findings that still can't be anchored in the review body.

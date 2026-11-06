@@ -8,7 +8,7 @@ The sandbox runs Monty, a subset of Python:
 - There is no filesystem, network, environment or clock access. Read code only through the functions below.
 - No class inheritance, `del`, `yield`, `import *`, or task APIs other than `asyncio.gather`.
 - State is kept between calls, like a REPL: variables and functions you define stay available.
-- A name's type is fixed by its first binding in the session: a plain assignment, a `for` loop target or a tuple unpacking, in any earlier call. Binding a value of another type to that name later is a type error, for example a tuple of a different length from `asyncio.gather`. Use new, descriptive names in each script (`diff`, `files`, `schema`, not `r`, `x` or `f`), or re-declare the type with an annotation: `r: str = ...`.
+- A name's type is fixed by its first binding in the session: a plain assignment, a `for` loop target or a tuple unpacking, in any earlier call. Binding a value of another type to that name later is a type error, for example a tuple of a different length from `asyncio.gather`. A string or number constant fixes the type to that exact value: after `intent = "a"`, a later `intent = "b"` fails. Use new, descriptive names in each script (`diff`, `files`, `schema`, not `r`, `x` or `f`), annotate constants you may reassign (`intent: str = "a"`), or re-declare the type with an annotation: `r: str = ...`.
 
 The functions are async. Call them with `await` and keyword arguments only, for example `await jj_show(revset=to)`. Calling one without `await` gives an unresolved coroutine, not its value. Do not redefine or import them.
 
