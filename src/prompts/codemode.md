@@ -8,6 +8,7 @@ The sandbox runs Monty, a subset of Python:
 - There is no filesystem, network, environment or clock access. Read code only through the functions below.
 - No class inheritance, `del`, `yield`, `import *`, or task APIs other than `asyncio.gather`.
 - State is kept between calls, like a REPL: variables and functions you define stay available.
+- A name's type is fixed by its first binding in the session: a plain assignment, a `for` loop target or a tuple unpacking, in any earlier call. Binding a value of another type to that name later is a type error, for example a tuple of a different length from `asyncio.gather`. Use new, descriptive names in each script (`diff`, `files`, `schema`, not `r`, `x` or `f`), or re-declare the type with an annotation: `r: str = ...`.
 
 The functions are async. Call them with `await` and keyword arguments only, for example `await jj_show(revset=to)`. Calling one without `await` gives an unresolved coroutine, not its value. Do not redefine or import them.
 
@@ -26,7 +27,7 @@ files
 
 Each script is type-checked against the function signatures before it runs. A type error, syntax error or exception comes back as the tool result with a traceback; fix the script and run it again.
 
-The last expression's value is returned, so end with the value you want to see. Strings are returned as-is; other values as JSON. Use `print()` for anything else you want to see. Output over 120,000 characters is cut from the middle, so filter, slice or search large results in Python before you return them.
+The last expression's value is returned, so end with the value you want to see. Strings are returned as-is; other values as JSON. Use `print()` for anything else you want to see. Output over 300,000 characters is cut from the middle, so filter, slice or search large results in Python before you return them.
 
 A function that fails raises `RuntimeError` with the error text. Catch it with `try`/`except` when other results in the same script are still useful.
 

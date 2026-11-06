@@ -61,6 +61,17 @@ Verify findings yourself; do not start another reviewer to do it.
 
 Post the review even when there are no findings.
 
+First build the verified new findings as a typed list, so their values keep their types:
+
+```python
+new_findings: list[NewFinding] = [
+    {"concerns": ["bugs", "design"], **f},  # f is a reviewer's Finding
+    {"concerns": ["bugs"], "file": "app/a.ts", "line": 12, "severity": "major", "summary": "...", "evidence": "...", "scenario": None},
+]
+```
+
+`NewFinding` is a type for annotations only. Write dict literals, never `NewFinding(...)` calls.
+
 1. Call `pull_request_review_write` with `method="create"` and `commitID` set to the head commit SHA from the first message, even if the PR head has advanced. If it fails because a pending review already exists, stop: don't delete it, because it may hold someone's drafts. Reply with `reviewPosted` false.
 2. Call `add_comment_to_pending_review` once per finding, with `subjectType="LINE"`. Use `side="RIGHT"` for added or context lines and `"LEFT"` for deleted lines. For a range, also set `startLine` and `startSide`.
 3. Call `pull_request_review_write` with `method="submit_pending"`, `event="COMMENT"` and the review body.

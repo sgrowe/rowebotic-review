@@ -127,6 +127,15 @@ class ReviewResult(TypedDict):
     ok: bool
     findings: list[Finding]
     error: str | None
+
+class NewFinding(TypedDict):
+    concerns: list[str]
+    file: str
+    line: int
+    severity: Literal["blocker", "major", "minor"]
+    summary: str
+    evidence: str
+    scenario: str | None
 `
 
 // ---------------------------------------------------------------- instructions
@@ -136,7 +145,8 @@ function pyLiteral(names: string[]): string {
 }
 
 export function reviewStub(concerns: Concern[]): string {
-  return `async def review(*, key: str, concern: ${pyLiteral(concerns.map(c => c.name).sort())}, scope: str, intent: str) -> ReviewResult:
+  const names = concerns.map(c => JSON.stringify(c.name)).sort()
+  return `async def review(*, key: str, concern: str, scope: str, intent: str) -> ReviewResult:
     """
     Start one reviewer for one concern and wait for its findings.
 
@@ -145,7 +155,7 @@ export function reviewStub(concerns: Concern[]): string {
 
     Args:
         key: unique name for this reviewer, e.g. "bugs-server".
-        concern: the concern to review.
+        concern: the concern to review, one of: ${names.join(', ')}.
         scope: path scope, e.g. "app/server/**" or "all changed files".
         intent: one or two sentences on what the PR is for.
     """
@@ -259,7 +269,10 @@ export function createReviewFunction(options: ReviewFunctionOptions): HostFuncti
     call: async (args, orchestratorSignal): Promise<ReviewResult> => {
       const key = String(args.key ?? 'reviewer')
       const concern = options.concerns.find(c => c.name === args.concern)
-      if (!concern) return { key, ok: false, findings: [], error: `unknown concern ${String(args.concern)}` }
+      if (!concern) {
+        const names = options.concerns.map(c => c.name).sort().join(', ')
+        return { key, ok: false, findings: [], error: `unknown concern ${String(args.concern)}; use one of: ${names}` }
+      }
       let id = key
       for (let n = 2; usedIds.has(id); n++) id = `${key}#${n}`
       usedIds.add(id)
@@ -303,6 +316,22 @@ export function createReviewFunction(options: ReviewFunctionOptions): HostFuncti
   }
 }
 
+/**
+ * The `from` revset: the merge base of the PR's base commit and head, which is
+ * what GitHub diffs against. Falls back to `trunk()` when the base commit is
+ * not in the local repo.
+ */
+async function prFrom(root: string, baseSha: string, headSha: string, signal: AbortSignal, log: (text: string) => void): Promise<string> {
+  try {
+    await run('jj', ['log', '-r', baseSha, '-T', 'commit_id', '--no-graph', '--ignore-working-copy'], { cwd: root, signal })
+    return `fork_point(${baseSha} | ${headSha})`
+  } catch (error) {
+    if (signal.aborted) throw error
+    log(`warning: PR base ${baseSha.slice(0, 7)} not found locally, diffing from trunk(): ${describeError(error)}`)
+    return `fork_point(trunk() | ${headSha})`
+  }
+}
+
 export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
   const print = options.print ?? (line => console.log(line))
   const project = await loadProject(options.root)
@@ -330,7 +359,7 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
     await prepare(project, runSignal, log)
     const headSha = pr.head.sha
     const changeId = (await run('jj', ['log', '-r', headSha, '-T', 'change_id', '--no-graph', '--ignore-working-copy'], { cwd: project.root, signal: runSignal })).trim()
-    const from = `fork_point(trunk() | ${headSha})`
+    const from = await prFrom(project.root, pr.base.sha, headSha, runSignal, log)
     const to = headSha
     const context = await fetchContext(github, repo, pr)
 

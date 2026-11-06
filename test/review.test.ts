@@ -28,8 +28,10 @@ function setup(runChild: (child: ChildRun, events: string[]) => Promise<Finding[
 const args = (key: string, concern = 'bugs') => ({ key, concern, scope: 'all', intent: 'i' })
 
 describe('reviewStub', () => {
-  it('lists concerns as a sorted Literal', () => {
-    assert.match(reviewStub(concerns), /concern: Literal\["bugs", "design"\]/)
+  it('types concern as str and lists the names in the docstring', () => {
+    const stub = reviewStub(concerns)
+    assert.match(stub, /concern: str,/)
+    assert.match(stub, /concern: the concern to review, one of: "bugs", "design"\./)
   })
 })
 
@@ -76,7 +78,7 @@ describe('createReviewFunction', () => {
       return []
     }, 20)
     const controller = new AbortController()
-    assert.deepEqual(await t.fn.call(args('x', 'nope'), controller.signal), { key: 'x', ok: false, findings: [], error: 'unknown concern nope' })
+    assert.deepEqual(await t.fn.call(args('x', 'nope'), controller.signal), { key: 'x', ok: false, findings: [], error: 'unknown concern nope; use one of: bugs, design' })
     const first = t.fn.call(args('a'), controller.signal)
     const waiting = t.fn.call(args('b'), controller.signal)
     assert.deepEqual(await first, { key: 'a', ok: false, findings: [], error: 'timed out after 0 min' })

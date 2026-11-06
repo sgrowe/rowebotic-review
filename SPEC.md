@@ -30,7 +30,7 @@ Install: `npm install && npm link`. Node 24 runs the `.ts` files directly (type 
 1. Load `.rowebotic-review/` (see "Project files").
 2. Fetch the PR with `gh`. Fork PRs are not supported: the head must be in the same repo.
 3. `jj git fetch`, then run `.rowebotic-review/prepare` if it is executable. A failing `prepare` prints a warning and the run continues.
-4. Revisions: `to` is the PR head commit SHA, `from` is `fork_point(trunk() | <headSha>)`, and the change ID comes from `jj log -r <sha> -T change_id --no-graph`.
+4. Revisions: `to` is the PR head commit SHA, `from` is `fork_point(<baseSha> | <headSha>)`, the merge base GitHub diffs against (so stacked PRs exclude the parent PR's changes). If the base commit is not in the local repo, it falls back to `fork_point(trunk() | <headSha>)` with a warning, and the change ID comes from `jj log -r <sha> -T change_id --no-graph`.
 5. Fetch the GitHub context with `gh` (see "GitHub context").
 6. Start the MCP servers (one jj, one psql, one GitHub client, shared by all agents) and a Monty worker pool.
 7. Run the orchestrator. It lists the changed files, picks concerns, starts reviewers with `asyncio.gather(review(...), ...)`, verifies their findings, posts the review, and replies with a JSON summary.
@@ -133,7 +133,7 @@ Each agent has exactly one tool, `python(code: string)`, run in Monty (`@pydanti
 - The jj and psql servers' own `instructions` text is included once.
 - Stubs come from MCP JSON schemas: `string→str`, `integer→int`, `number→float`, `boolean→bool`, `array→list[T]` (no `items` → `list[Any]`), `object→dict[str, Any]`, `enum→Literal[...]`, type arrays like `["string","null"]` → `str | None`, `$ref`/`anyOf`/unknown → `Any`. Optional params become `T | None = None`. All params are keyword-only (`*`, omitted when there are none). The tool description and param descriptions form the docstring. Python keywords get a trailing `_` (`from_`) and are mapped back.
 - Host functions get kwargs as a trailing object, which may be a `Map` or null-prototype object. Values are deep-converted (`Map`→object, `Set`→array, `BigInt`→number or string), `None` optionals are dropped, and the MCP text content is joined. An MCP `isError` result raises `RuntimeError` with its text.
-- Output to the model: captured stdout, then the last expression's value (strings as-is, else JSON). Middle-truncated at 120,000 characters with a "filter or slice" note.
+- Output to the model: captured stdout, then the last expression's value (strings as-is, else JSON). Middle-truncated at 300,000 characters with a "filter or slice" note.
 - Syntax, type and runtime errors return the traceback (`err.display('traceback')`, or the ty diagnostics) as the tool output. `MontyCrashedError` loses the session: the next call gets a new one, and the output says the state was reset.
 - GitHub write failures go back to the model. They are not retried automatically because they are not idempotent.
 
@@ -144,7 +144,7 @@ Each agent has exactly one tool, `python(code: string)`, run in Monty (`@pydanti
 | Orchestrator | `jj_*`, `psql_*`, `review(...)`, GitHub `pull_request_read`, `pull_request_review_write`, `add_comment_to_pending_review` | `{ reviewPosted, newFindings, remainingIssues, failedReviewers, skippedConcerns }`     |
 | Reviewer     | `jj_*`, `psql_*`, `read_doc(name)` (when the project has docs)                                              | `{ findings: [{ file, line, severity, summary, evidence, scenario \| null }] }`          |
 
-`review(*, key, concern, scope, intent) -> ReviewResult { key, ok, findings, error }`. `concern` is a `Literal` of the project's concern names. It never raises. Duplicate keys get a `#2` suffix in logs.
+`review(*, key, concern, scope, intent) -> ReviewResult { key, ok, findings, error }`. `concern` is a `str`; the docstring lists the project's concern names, and an unknown name returns `ok=False` with the valid names. It never raises. Duplicate keys get a `#2` suffix in logs.
 
 The orchestrator posts the review itself: create a pending review on the head SHA, add one comment per finding, submit with `COMMENT`. If a pending review already exists it stops without deleting it.
 

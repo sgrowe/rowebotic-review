@@ -5,7 +5,7 @@
 import { Monty, MontyCrashedError, MontyError, MontyTypingError, type MontySession } from '@pydantic/monty'
 import type { JsonSchema, McpServer, McpTool } from './mcp.ts'
 
-export const MAX_OUTPUT_CHARS = 120_000
+export const MAX_OUTPUT_CHARS = 300_000
 
 const PYTHON_KEYWORDS = new Set([
   'False', 'None', 'True', 'and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue', 'def', 'del',

@@ -30,7 +30,7 @@ Check each finding in the code before you report it. Drop what you cannot confir
 If you have confirmed what the code does but cannot tell whether the PR intends it, report it anyway. Say what is unclear in `scenario`, not `summary`. The orchestrator decides.
 
 - `file`: repo-relative path.
-- `line`: line number at `to`. For deleted code, use the line number at `from`.
+- `line`: a line that the diff from `from` to `to` adds or deletes, not a context line. A large `context=` can show lines outside GitHub's diff hunks, and a comment can't be posted there. Use the line number at `to` for an added line, and at `from` for a deleted line. For an issue in unchanged code or in another file, use the changed line that causes it, and cite the affected `file:line` in `evidence`.
 - `severity`: `blocker` breaks production, loses data or opens a security hole. `major` is a real bug or risk that users will hit. `minor` is worth fixing but safe to ship.
 - `summary`: one sentence that states the problem.
 - `evidence`: the code that proves it, cited as `file:line`.

@@ -9,6 +9,7 @@ import {
   formatOutput,
   type HostFunction,
   kwargsOf,
+  MAX_OUTPUT_CHARS,
   mcpHostFunctions,
   middleTruncate,
   pythonType,
@@ -81,6 +82,10 @@ describe('output', () => {
     assert.ok(out.startsWith('a'.repeat(25)))
     assert.ok(out.endsWith('b'.repeat(25)))
     assert.match(out, /150 characters omitted/)
+  })
+  it('states the output limit in the prompt', () => {
+    const prompt = readFileSync(new URL('../src/prompts/codemode.md', import.meta.url), 'utf8')
+    assert.ok(prompt.includes(MAX_OUTPUT_CHARS.toLocaleString('en-US')))
   })
 })
 
