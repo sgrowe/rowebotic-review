@@ -17,7 +17,7 @@ Run from the root of the repo under review.
 | ------------------------------- | -------------------------------------------------------------------------------- |
 | `rowebotic-review login`        | ChatGPT browser login. Stores tokens in `~/.rowebotic-review/auth.json`.         |
 | `rowebotic-review review <pr>`  | Reviews one PR of the current repo and posts a `COMMENT` review.                 |
-| `rowebotic-review watch`        | Reviews matching PRs one at a time, forever.                                     |
+| `rowebotic-review watch`        | Reviews matching PRs in batches of up to ten, forever.                                     |
 
 The repo comes from `gh repo view`. There is no dry run. The review event is always `COMMENT`: never `APPROVE`, never `REQUEST_CHANGES`. There is no footer.
 
@@ -187,16 +187,19 @@ In the reviewed repo, under `.rowebotic-review/`:
 
 ## Watcher
 
-Same logic as hpi's `pi-review-watch.ts`, in-process:
+Batch scheduling, in-process:
 
 - Search: the settings string + ` updated:>=<now − 5 days, ISO> sort:created-asc`, with `--state open --limit 1000`, recomputed every scan.
 - Skip a PR whose head commit is older than 5 days (logged once per head), before fetching its reviews.
 - Skip it if my submitted review exists for the head SHA. Fail it if my pending review exists.
-- One review at a time. After a run, check `gh` for a submitted review on the reviewed head; "new commits arrived" is fine if the old head was reviewed.
-- 3-minute cooldown per PR after each review and after each error, while other PRs can continue. 3-minute wait when nothing is ready.
-- Usage limit → sleep until `resetsAt` (+1 minute; 1 hour if unknown). `AuthError` stops the watcher.
-- Ctrl-C aborts the active review and the watcher. A second Ctrl-C exits at once.
+- Select up to ten eligible PRs, fetch and prepare once, run reviews concurrently, and await all reviews and cleanup before searching again. Verify submitted reviews against captured head SHAs; new commits arriving during review are allowed.
+- First reviews qualify immediately within the age restrictions. Previously reviewed PRs require an unreviewed head commit at least two minutes old (commit timestamp, not push time).
+- Three-minute cooldown after individual errors only. Sleep 90 seconds when nothing qualifies or a scan/fetch fails.
+- Account failures leave peers running. After the batch settles, `AuthError` stops the watcher; otherwise usage limits sleep until the latest required reset (+1 minute; 1 hour if unknown).
+- Ctrl-C aborts the active batch and the watcher. A second Ctrl-C exits at once.
 - Cooldowns live in memory only. Run one watcher per repo.
+
+Each batch shares MCP connections and a Monty pool capped at `min(50, 9 × batchSize)`. Agents retain separate interpreter sessions, histories, turn state, cancellation, and transcripts. Worker queue time counts toward reviewer deadlines. The watcher shares a token store for single-flight OAuth refresh. Batch ID, size, and pool capacity are recorded for cache comparisons. Repository-wide role cache keys and per-PR reviewer startup gates remain unchanged.
 
 ## Transcript
 
