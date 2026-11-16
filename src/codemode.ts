@@ -204,6 +204,7 @@ export class CodeMode {
   #functions: HostFunction[]
   #signal: AbortSignal
   #session: MontySession | undefined
+  #closed = false
 
   constructor(options: CodeModeOptions) {
     this.#pool = options.pool
@@ -213,12 +214,26 @@ export class CodeMode {
   }
 
   async #checkout(): Promise<MontySession> {
-    this.#session ??= await this.#pool.checkout({
-      typeCheck: true,
-      typeCheckStubs: this.stubs,
-      limits: { maxSuspensions: 100_000, maxFeedDurationSecs: 300 },
+    this.#signal.throwIfAborted()
+    if (this.#closed) throw new Error('Sandbox is closed')
+    if (this.#session) return this.#session
+    return new Promise<MontySession>((resolve, reject) => {
+      const onAbort = () => reject(this.#signal.reason)
+      this.#signal.addEventListener('abort', onAbort, { once: true })
+      this.#pool.checkout({
+        typeCheck: true,
+        typeCheckStubs: this.stubs,
+        limits: { maxSuspensions: 100_000, maxFeedDurationSecs: 300 },
+      }).then(async session => {
+        if (this.#closed || this.#signal.aborted) {
+          await session.close().catch(() => {})
+          reject(this.#signal.reason ?? new Error('Sandbox is closed'))
+        } else {
+          this.#session = session
+          resolve(session)
+        }
+      }, reject).finally(() => this.#signal.removeEventListener('abort', onAbort))
     })
-    return this.#session
   }
 
   async run(code: string): Promise<RunResult> {
@@ -269,12 +284,13 @@ export class CodeMode {
   }
 
   async close(): Promise<void> {
+    this.#closed = true
     const session = this.#session
     this.#session = undefined
     await session?.close().catch(() => {})
   }
 }
 
-export async function createPool(): Promise<Monty> {
-  return Monty.create({ maxProcesses: 32 })
+export async function createPool(maxProcesses = 32): Promise<Monty> {
+  return Monty.create({ maxProcesses })
 }

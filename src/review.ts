@@ -10,7 +10,7 @@ import { AuthError, homeDir, TokenStore } from './auth.ts'
 import { describeError, modelCaller, runAgent } from './agent.ts'
 import { buildStubs, CodeMode, createPool, type HostFunction, mcpHostFunctions } from './codemode.ts'
 import { type Concern, loadProject, type ProjectConfig } from './config.ts'
-import { fetchContext, GitHub, type Repo, repoSlug, run } from './github.ts'
+import { fetchContext, GitHub, type Repo, type PullRequest, repoSlug, run } from './github.ts'
 import { closeServers, type McpServers, startServers } from './mcp.ts'
 import { createClient, type Item, UsageLimitError } from './model.ts'
 import { Transcript } from './transcript.ts'
@@ -201,6 +201,7 @@ export type ReviewOptions = {
   prNumber: number
   signal: AbortSignal
   print?: (line: string) => void
+  prepared?: { project: ProjectConfig; repo: Repo; pr: PullRequest; servers: McpServers; pool: Monty; model: ReturnType<typeof modelCaller>; batchId: string; batchSize: number; poolCapacity: number }
 }
 
 export type ReviewOutcome = { result: OrchestratorResult; headSha: string; transcriptPath: string }
@@ -349,12 +350,55 @@ export async function prFrom(root: string, baseRef: string, headSha: string, sig
   return `fork_point(trunk() | ${headSha})`
 }
 
-export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
-  const print = options.print ?? (line => console.log(line))
+export async function createReviewModel(): Promise<ReturnType<typeof modelCaller>> {
+  const tokens = await TokenStore.load()
+  return modelCaller(createClient(tokens), tokens)
+}
+
+export function batchPoolCapacity(size: number): number {
+  return Math.min(50, size * 9)
+}
+
+export async function reviewBatch(options: {
+  root: string
+  prs: PullRequest[]
+  signal: AbortSignal
+  model: ReturnType<typeof modelCaller>
+  print?: (line: string) => void
+}): Promise<PromiseSettledResult<ReviewOutcome>[]> {
+  if (!options.prs.length) return []
+  const print = options.print ?? console.log
   const project = await loadProject(options.root)
   const github = new GitHub({ cwd: options.root, signal: options.signal })
   const repo = await github.repo()
-  const pr = await github.pullRequest(repo, options.prNumber)
+  const batchId = randomUUID().slice(0, 8)
+  const batchSize = options.prs.length
+  const poolCapacity = batchPoolCapacity(batchSize)
+  const started = Date.now()
+  print(`Batch ${batchId}: ${batchSize} PRs, ${poolCapacity} workers`)
+  await prepare(project, options.signal, print)
+  const resources = await startReviewResources(() => startServers(project.root), () => createPool(poolCapacity))
+  try {
+    const results = await Promise.allSettled(options.prs.map(pr => reviewPr({
+      root: options.root, prNumber: pr.number, signal: options.signal,
+      print: line => print(`[PR #${pr.number}] ${line}`),
+      prepared: { project, repo, pr, ...resources, model: options.model, batchId, batchSize, poolCapacity },
+    })))
+    const succeeded = results.filter(r => r.status === 'fulfilled').length
+    print(`Batch ${batchId}: ${succeeded} completed, ${batchSize - succeeded} failed in ${Math.round((Date.now() - started) / 1000)}s`)
+    return results
+  } finally {
+    await resources.pool.close().catch(() => {})
+    await closeServers(resources.servers)
+  }
+}
+
+export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
+  const print = options.print ?? (line => console.log(line))
+  const project = options.prepared?.project ?? await loadProject(options.root)
+  const github = new GitHub({ cwd: options.root, signal: options.signal })
+  const repo = options.prepared?.repo ?? await github.repo()
+  const pr = options.prepared?.pr ?? await github.pullRequest(repo, options.prNumber)
   if (pr.head.repo?.full_name !== repoSlug(repo)) throw new Error(`PR #${pr.number} is from a fork (${pr.head.repo?.full_name}); forks are not supported`)
 
   const runId = randomUUID().slice(0, 8)
@@ -364,23 +408,22 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
 
   const runController = new AbortController()
   const runSignal = AbortSignal.any([options.signal, runController.signal])
-  const tokens = await TokenStore.load()
-  const model = modelCaller(createClient(tokens), tokens)
+  const model = options.prepared?.model ?? await createReviewModel()
 
   let servers: McpServers | undefined
   let pool: Monty | undefined
   const codemodes: CodeMode[] = []
   const started = Date.now()
-  transcript.write('run_start', 'run', { repo: repoSlug(repo), pr: pr.number, headSha: pr.head.sha, runId })
+  transcript.write('run_start', 'run', { repo: repoSlug(repo), pr: pr.number, headSha: pr.head.sha, runId, ...(options.prepared ? { batchId: options.prepared.batchId, batchSize: options.prepared.batchSize, poolCapacity: options.prepared.poolCapacity } : {}) })
   try {
-    await prepare(project, runSignal, log)
+    if (!options.prepared) await prepare(project, runSignal, log)
     const headSha = pr.head.sha
     const changeId = (await run('jj', ['log', '-r', headSha, '-T', 'change_id', '--no-graph', '--ignore-working-copy'], { cwd: project.root, signal: runSignal })).trim()
     const from = await prFrom(project.root, pr.base.ref, headSha, runSignal, log)
     const to = headSha
     const context = await fetchContext(github, repo, pr)
 
-    ;({ servers, pool } = await startReviewResources(() => startServers(project.root), createPool))
+    ;({ servers, pool } = options.prepared ?? await startReviewResources(() => startServers(project.root), createPool))
     const mcp = servers
 
     // Reviewer functions and instructions (shared by all reviewers).
@@ -490,8 +533,10 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
     throw error
   } finally {
     await Promise.all(codemodes.map(codemode => codemode.close()))
-    await pool?.close().catch(() => {})
-    if (servers) await closeServers(servers)
+    if (!options.prepared) {
+      await pool?.close().catch(() => {})
+      if (servers) await closeServers(servers)
+    }
   }
 }
 

@@ -156,3 +156,40 @@ describe('CodeMode with Monty', () => {
     }
   })
 })
+
+describe('shared pool cancellation', () => {
+  it('rejects a cancelled checkout promptly and closes a late session without executing it', async () => {
+    let release!: (session: unknown) => void
+    let closes = 0
+    let runs = 0
+    const pool = { checkout: () => new Promise(resolve => { release = resolve }) } as unknown as Monty
+    const controller = new AbortController()
+    const mode = new CodeMode({ pool, functions: [], signal: controller.signal })
+    const running = mode.run('1')
+    controller.abort(new Error('cancelled'))
+    await assert.rejects(running, /cancelled/)
+    await mode.close()
+    release({ close: async () => { closes++ }, feedRun: async () => { runs++ } })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(closes, 1)
+    assert.equal(runs, 0)
+  })
+
+  it('keeps sessions isolated and releases capacity after a peer closes', async () => {
+    const pool = await createPool(2)
+    const first = new CodeMode({ pool, functions: [], signal: new AbortController().signal })
+    const second = new CodeMode({ pool, functions: [], signal: new AbortController().signal })
+    const third = new CodeMode({ pool, functions: [], signal: new AbortController().signal })
+    try {
+      await first.run('secret = 123')
+      assert.ok((await second.run('secret')).error)
+      const queued = third.run('42')
+      await first.close()
+      assert.equal((await queued).output, '42')
+      assert.equal((await second.run('7')).output, '7')
+    } finally {
+      await Promise.all([first.close(), second.close(), third.close()])
+      await pool.close()
+    }
+  })
+})

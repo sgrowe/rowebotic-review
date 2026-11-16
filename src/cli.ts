@@ -5,13 +5,13 @@ import { AuthError, login } from './auth.ts'
 import { loadProject } from './config.ts'
 import { GitHub } from './github.ts'
 import { UsageLimitError } from './model.ts'
-import { reviewPr } from './review.ts'
+import { createReviewModel, reviewBatch, reviewPr } from './review.ts'
 import { Watcher } from './watch.ts'
 
 const usage = `usage:
   rowebotic-review login          sign in with your ChatGPT account (browser)
   rowebotic-review review <pr>    review one PR of the current repo and post the review
-  rowebotic-review watch          review matching PRs one at a time
+  rowebotic-review watch          review matching PRs in batches of up to ten
 
 Run review and watch from the repo root, which must contain .rowebotic-review/.`
 
@@ -45,12 +45,13 @@ async function main(argv: string[], signal: AbortSignal): Promise<number> {
       const github = new GitHub({ cwd: root, signal })
       const [repo, me] = await Promise.all([github.repo(), github.login()])
       if (!process.env.PGDATABASE) log('warning: PGDATABASE is not set; the psql functions will use libpq defaults')
+      const model = await createReviewModel()
       const watcher = new Watcher({
         github,
         repo,
         login: me,
         search: project.search,
-        review: (prNumber, reviewSignal) => reviewPr({ root, prNumber, signal: reviewSignal }),
+        reviewBatch: (prs, reviewSignal) => reviewBatch({ root, prs, signal: reviewSignal, model }),
         log,
         signal,
       })
