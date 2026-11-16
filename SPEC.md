@@ -127,9 +127,9 @@ Run-level abort: one run `AbortController`. Agent signals are `AbortSignal.any([
 
 Every agent has `python(code: string)`, run in Monty (`@pydantic/monty`); orchestrators also have the direct `review_batch` tool.
 
-- One Monty session per agent, so variables persist between calls like a REPL. One worker pool per run, `maxProcesses: 32`.
-- Limits: `maxSuspensions: 100_000` per session, `maxFeedDurationSecs: 300`. Time spent in host calls does not count, so a long `review_batch` call is fine.
-- All functions are listed up front in `instructions` as typed Python stubs, sorted by name. ty type-checks each script against the same stubs before it runs. There are no search or describe functions, no store and no output files.
+- One Monty session per agent, so variables persist between calls like a REPL. Standalone reviews use a 32-worker pool; watcher batches share the adaptive pool described below.
+- Limits: `maxSuspensions: 100_000` per session, `maxFeedDurationSecs: 300`. Time spent in host calls does not count. Direct `review_batch` calls execute outside Monty.
+- All Python functions are listed up front in `instructions` as typed Python stubs, sorted by name. ty type-checks each script against the same stubs before it runs. There are no search or describe functions, no store and no output files.
 - The jj and psql servers' own `instructions` text is included once.
 - Stubs come from MCP JSON schemas: `string→str`, `integer→int`, `number→float`, `boolean→bool`, `array→list[T]` (no `items` → `list[Any]`), `object→dict[str, Any]`, `enum→Literal[...]`, type arrays like `["string","null"]` → `str | None`, `$ref`/`anyOf`/unknown → `Any`. Optional params become `T | None = None`. All params are keyword-only (`*`, omitted when there are none). The tool description and param descriptions form the docstring. Python keywords get a trailing `_` (`from_`) and are mapped back.
 - Host functions get kwargs as a trailing object, which may be a `Map` or null-prototype object. Values are deep-converted (`Map`→object, `Set`→array, `BigInt`→number or string), `None` optionals are dropped, and the MCP text content is joined. An MCP `isError` result raises `RuntimeError` with its text.
@@ -223,7 +223,7 @@ One line per event, for example:
 
 ```
 12:01:03 [bugs-server] turn 3 in 14.2k cached 13.9k (98%) out 1.1k 9.8s
-12:01:05 [orchestrator] python: results = await asyncio.gather(*[ → 6 calls 512.3s
+12:01:05 [orchestrator] review_batch: done in 512.3s
 12:01:09 [design] retry 1 in 5s (transient): APIConnectionError: Connection error.
 ```
 
