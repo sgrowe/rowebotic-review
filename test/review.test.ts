@@ -5,7 +5,7 @@ import type { Monty } from '@pydantic/monty'
 import type { Concern } from '../src/config.ts'
 import type { McpServer, McpServers } from '../src/mcp.ts'
 import { UsageLimitError } from '../src/model.ts'
-import { batchPoolCapacity, PR_START_INTERVAL_MS, type ChildRun, createReviewFunction, type Finding, reviewStub, runBatch, startReviewResources, transcriptFile } from '../src/review.ts'
+import { batchPoolCapacity, PR_START_INTERVAL_MS, type ChildRun, createReviewRunner, type Finding, createReviewBatchTool, runBatch, startReviewResources, transcriptFile } from '../src/review.ts'
 
 const concerns: Concern[] = [
   { name: 'design', description: 'd', when: 'always', body: 'design body' },
@@ -17,14 +17,14 @@ const finding: Finding = { file: 'a.ts', line: 1, severity: 'minor', summary: 's
 function setup(runChild: (child: ChildRun, events: string[]) => Promise<Finding[]>, timeoutMs = 10_000) {
   const events: string[] = []
   const stopped: unknown[] = []
-  const fn = createReviewFunction({
+  const runner = createReviewRunner({
     concerns,
     timeoutMs,
     runChild: child => runChild(child, events),
     log: () => {},
     stopRun: error => stopped.push(error),
   })
-  return { fn, events, stopped }
+  return { fn: { call: runner }, events, stopped }
 }
 
 const args = (key: string, concern = 'bugs') => ({ key, concern, scope: 'all', intent: 'i' })
@@ -41,15 +41,7 @@ it('closes MCP servers when the Monty pool fails to start', async () => {
   assert.deepEqual(closed.sort(), ['github', 'jj', 'psql'])
 })
 
-describe('reviewStub', () => {
-  it('types concern as str and lists the names in the docstring', () => {
-    const stub = reviewStub(concerns)
-    assert.match(stub, /concern: str,/)
-    assert.match(stub, /concern: the concern to review, one of: "bugs", "design"\./)
-  })
-})
-
-describe('createReviewFunction', () => {
+describe('createReviewRunner', () => {
   it('starts the first reviewer at once and the rest after its first response', async () => {
     const t = setup(async (child, events) => {
       events.push(`start ${child.id}`)
@@ -195,7 +187,7 @@ it('scales pool capacity up to sixty workers', () => {
   assert.equal(batchPoolCapacity(10), 60)
 })
 
-it('starts immediately then spaces overlapping PRs three seconds apart in selection order', async () => {
+it('starts immediately then spaces overlapping PRs two seconds apart in selection order', async () => {
   let now = 0
   const starts: number[] = []
   const times: number[] = []
@@ -216,7 +208,7 @@ it('starts immediately then spaces overlapping PRs three seconds apart in select
   releases.shift()!()
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(starts, [1, 2, 3])
-  assert.deepEqual(times, [0, 3000, 6000])
+  assert.deepEqual(times, [0, 2000, 4000])
   assert.deepEqual(delays, [PR_START_INTERVAL_MS, PR_START_INTERVAL_MS])
   finishFirst()
   assert.deepEqual((await batch).map(r => r.status), ['fulfilled', 'rejected', 'fulfilled'])
@@ -243,4 +235,23 @@ it('aborts launch waits and drains active reviews before closing shared resource
   finish()
   await rejected
   assert.equal(closed, true)
+})
+
+
+describe('review_batch', () => {
+  it('validates the whole batch before launching and returns complete ordered results', async () => {
+    const seen: string[] = []
+    const tool = createReviewBatchTool(async request => {
+      seen.push(request.key)
+      await sleep(request.key === 'first' ? 5 : 0)
+      return { key: request.key, ok: true, findings: [{ ...finding, evidence: 'x'.repeat(300001) }], error: null }
+    })
+    const signal = new AbortController().signal
+    await assert.rejects(tool.call({ reviewers: [args('first'), { key: 'invalid' }] }, signal), /review_batch/)
+    assert.deepEqual(seen, [])
+    const result = await tool.call({ reviewers: [args('first'), args('second')] }, signal) as { key: string; findings: Finding[] }[]
+    assert.deepEqual(seen, ['first', 'second'])
+    assert.deepEqual(result.map(r => r.key), ['first', 'second'])
+    assert.equal(result[0]!.findings[0]!.evidence.length, 300001)
+  })
 })

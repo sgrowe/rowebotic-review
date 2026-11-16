@@ -1,6 +1,6 @@
 ## The `python` tool
 
-You have one tool, `python`. It runs Python code in a sandbox and returns what the code printed, followed by the value of the last expression. Use it for every function call listed under "Functions" below.
+The `python` tool runs Python code in a sandbox and returns what the code printed, followed by the value of the last expression. Use it for every function call listed under "Functions" below.
 
 The sandbox runs Monty, a subset of Python:
 

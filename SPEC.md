@@ -33,7 +33,7 @@ Install: `npm run install-locally` (runs `npm install && npm link`). Node 24 run
 4. Revisions: `to` is the PR head commit SHA, `from` is `fork_point(remote_bookmarks(exact:"<baseRef>", exact:"origin") | <headSha>)`. That is the merge base GitHub diffs a PR from, so a stacked PR's diff leaves out its parent PR's changes. If the base branch is not on origin, `from` falls back to `fork_point(trunk() | <headSha>)` with a warning. The change ID comes from `jj log -r <sha> -T change_id --no-graph`.
 5. Fetch the GitHub context with `gh` (see "GitHub context").
 6. Start the MCP servers (one jj, one psql, one GitHub client, shared by all agents) and a Monty worker pool.
-7. Run the orchestrator. It lists the changed files, picks concerns, starts reviewers with `asyncio.gather(review(...), ...)`, verifies their findings, posts the review, and replies with a JSON summary.
+7. Run the orchestrator. It lists the changed files, picks concerns, starts reviewers with `the direct `review_batch` tool`, verifies their findings, posts the review, and replies with a JSON summary.
 8. Print the summary, the per-agent cache table and the transcript path.
 
 ## Model and transport
@@ -77,7 +77,7 @@ Rules, per agent:
 
 Cache keys (≤ 64 characters, one constant each): `<owner/repo>:orchestrator` and `<owner/repo>:reviewer`. All reviewers share one key. The `session-id` header is set to the same value, so all reviewers share it too: Codex uses it for routing, and with a per-agent `session-id` a staggered reviewer's first request never hit its sibling's cache (0/6 in spike 5, against 5/6 with `session-id` = cache key).
 
-**Staggered start**: the first `review()` call starts at once. The others wait until that reviewer's first model response completes or fails, so their first request can read its cached instructions prefix. A reviewer's 20-minute timer starts after the wait.
+**Staggered start**: the first reviewer in `review_batch` starts at once. The others wait until that reviewer's first model response completes or fails, so their first request can read its cached instructions prefix. A reviewer's 20-minute timer starts after the wait.
 
 **Turn state**: Codex returns an `x-codex-turn-state` header on each response. Each agent sends back the latest one it received, as the Codex CLI does. In the spike this gave 1 cache miss in 28 follow-up turns, against 3 in 28 without it. Reviewers do not share each other's turn state: sending a sibling's turn state on a reviewer's first request made hits worse (5/8 against 7/8).
 
@@ -85,7 +85,7 @@ Spike findings (2026-11-05):
 
 - The full body above is accepted, and replaying `reasoning` / `function_call` / `function_call_output` items under `store: false` works.
 - `session-id` steers routing. Spike 5 used the real reviewer instructions (~4.3k tokens) with a fresh nonce per trial: agent A's first request, then agent B's. B hit A's cache in 0/6 trials with per-agent `session-id`s, and in 5/6 with `session-id` = cache key. An earlier, smaller spike had suggested no difference.
-- `prompt_cache_retention: "24h"` is rejected with 400 "Unsupported parameter". The orchestrator's turn after a long `review()` gather can therefore miss the cache when the gap is longer than the cache TTL.
+- `prompt_cache_retention: "24h"` is rejected with 400 "Unsupported parameter". The orchestrator's turn after a long `review_batch` call can therefore miss the cache when the gap is longer than the cache TTL.
 - Even with everything right, some requests miss the whole prefix (about 1 in 6 to 1 in 10 in the spikes and the smoke run). This looks like backend routing, which we can't control.
 - Codex `message` items carry a `phase` (`final_answer` seen). No commentary messages appeared next to tool calls.
 - The request id header is `x-oai-request-id`.
@@ -98,7 +98,7 @@ A `cache_miss` record is written when `cached < previousInput − 1024`, where `
 
 `run_end` and the stdout table have per-agent and per-role totals. The reviewer hit rate is split into turn 1 and turns ≥ 2: turn 1 measures the stagger and shared key; turns ≥ 2 measure append-only input.
 
-Expected misses: the orchestrator's turn after a long `review()` gather (idle longer than the cache TTL) and nudge turns.
+Expected misses: the orchestrator's turn after a long `review_batch` call (idle longer than the cache TTL) and nudge turns.
 
 Open question: the two live smoke runs (two reviewers, one shared key) had full-prefix misses when both reviewers sent requests at about the same time, and the second reviewer's turn 1 missed both times. OpenAI documents that one prefix+key sent more than about 15 times a minute overflows to other machines, which would make a shared reviewer key worse with many parallel reviewers. The `response` and `cache_miss` records (with `gapMs`) are there to settle this on real runs.
 
@@ -121,14 +121,14 @@ Classification, in order:
 
 Backoff: 5 s, 15 s, 30 s, 60 s, 60 s, each ±20% jitter, then fail. `retry-after-ms` / `retry-after` replaces the backoff step, up to 5 minutes. Every retry writes a `retry` record and a stdout line.
 
-Run-level abort: one run `AbortController`. Agent signals are `AbortSignal.any([run or orchestrator signal, timeout])`. A reviewer that hits `UsageLimitError` or `AuthError` aborts the run, and the error reaches `review` and the watcher (which sleeps until `resetsAt`). Other reviewer failures come back as `{ ok: false, error }`; `review()` never raises inside `gather`.
+Run-level abort: one run `AbortController`. Agent signals are `AbortSignal.any([run or orchestrator signal, timeout])`. A reviewer that hits `UsageLimitError` or `AuthError` aborts the run, and the error reaches `review` and the watcher (which sleeps until `resetsAt`). Other reviewer failures come back as `{ ok: false, error }`; `review_batch` returns ordered results after all children settle.
 
 ## Codemode
 
-Each agent has exactly one tool, `python(code: string)`, run in Monty (`@pydantic/monty`).
+Every agent has `python(code: string)`, run in Monty (`@pydantic/monty`); orchestrators also have the direct `review_batch` tool.
 
 - One Monty session per agent, so variables persist between calls like a REPL. One worker pool per run, `maxProcesses: 32`.
-- Limits: `maxSuspensions: 100_000` per session, `maxFeedDurationSecs: 300`. Time spent in host calls does not count, so a long `review()` gather is fine.
+- Limits: `maxSuspensions: 100_000` per session, `maxFeedDurationSecs: 300`. Time spent in host calls does not count, so a long `review_batch` call is fine.
 - All functions are listed up front in `instructions` as typed Python stubs, sorted by name. ty type-checks each script against the same stubs before it runs. There are no search or describe functions, no store and no output files.
 - The jj and psql servers' own `instructions` text is included once.
 - Stubs come from MCP JSON schemas: `string→str`, `integer→int`, `number→float`, `boolean→bool`, `array→list[T]` (no `items` → `list[Any]`), `object→dict[str, Any]`, `enum→Literal[...]`, type arrays like `["string","null"]` → `str | None`, `$ref`/`anyOf`/unknown → `Any`. Optional params become `T | None = None`. All params are keyword-only (`*`, omitted when there are none). The tool description and param descriptions form the docstring. Python keywords get a trailing `_` (`from_`) and are mapped back.
@@ -141,10 +141,10 @@ Each agent has exactly one tool, `python(code: string)`, run in Monty (`@pydanti
 
 | Agent        | Functions                                                                                                  | Output                                                                                  |
 | ------------ | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Orchestrator | `jj_*`, `psql_*`, `review(...)`, GitHub `pull_request_read`, `pull_request_review_write`, `add_comment_to_pending_review` | `{ reviewPosted, newFindings, remainingIssues, failedReviewers, skippedConcerns }`     |
+| Orchestrator | Direct `review_batch`; Python `jj_*`, `psql_*`, GitHub `pull_request_read`, `pull_request_review_write`, `add_comment_to_pending_review` | `{ reviewPosted, newFindings, remainingIssues, failedReviewers, skippedConcerns }`     |
 | Reviewer     | `jj_*`, `psql_*`, `read_doc(name)` (when the project has docs)                                              | `{ findings: [{ file, line, severity, summary, evidence, scenario \| null }] }`          |
 
-`review(*, key, concern, scope, intent) -> ReviewResult { key, ok, findings, error }`. `concern` is a `str`; the docstring lists the project's concern names, and an unknown name returns `ok=False` with the valid names. It never raises. Duplicate keys get a `#2` suffix in logs.
+`review_batch({reviewers: [{key, concern, scope, intent}, ...]})` is an orchestrator-only direct tool. It returns the full ordered array of `{ key, ok, findings, error }` results without Python output truncation. Argument structure is validated before any launch; unknown concerns return per-reviewer errors. Duplicate keys get a `#2` suffix in logs. Findings enter the model conversation, not the Python session. Python remains available for investigation and GitHub operations; its session lifetime is unchanged.
 
 The orchestrator posts the review itself: create a pending review on the head SHA, add one comment per finding, submit with `COMMENT`. If a pending review already exists it stops without deleting it.
 
@@ -199,7 +199,7 @@ Batch scheduling, in-process:
 - Ctrl-C aborts the active batch and the watcher. A second Ctrl-C exits at once.
 - Cooldowns live in memory only. Run one watcher per repo.
 
-The first PR starts immediately after preparation and resource startup; subsequent PRs launch three seconds apart while previous reviews continue. Cancellation interrupts launch delays and prevents remaining PRs from starting, then drains active reviews before cleanup. Each batch shares MCP connections and a Monty pool capped at `min(60, 9 × batchSize)`. Agents retain separate interpreter sessions, histories, turn state, cancellation, and transcripts. Worker queue time counts toward reviewer deadlines. The watcher shares a token store for single-flight OAuth refresh. Batch ID, size, and pool capacity are recorded for cache comparisons. Repository-wide role cache keys and per-PR reviewer startup gates remain unchanged.
+The first PR starts immediately after preparation and resource startup; subsequent PRs launch two seconds apart while previous reviews continue. Cancellation interrupts launch delays and prevents remaining PRs from starting, then drains active reviews before cleanup. Each batch shares MCP connections and a Monty pool capped at `min(60, 9 × batchSize)`. Agents retain separate interpreter sessions, histories, turn state, cancellation, and transcripts. Worker queue time counts toward reviewer deadlines. The watcher shares a token store for single-flight OAuth refresh. Batch ID, size, and pool capacity are recorded for cache comparisons. Repository-wide role cache keys and per-PR reviewer startup gates remain unchanged.
 
 ## Transcript
 
@@ -240,7 +240,7 @@ At the end: the posted flag, new findings ranked by severity, remaining issues, 
 | `src/codemode.ts`        | Monty pool and session, stubs from MCP schemas, kwargs, output formatting     |
 | `src/mcp.ts`             | jj and psql over stdio, GitHub over HTTP, tool lists, call → text            |
 | `src/github.ts`          | `gh` helpers: repo, PR context (REST + GraphQL threads), reviews, search     |
-| `src/review.ts`          | One review run: prep, context, orchestrator, `review()` with stagger, summary |
+| `src/review.ts`          | One review run: prep, context, orchestrator, direct `review_batch` delegation, summary |
 | `src/watch.ts`           | Watcher loop                                                                  |
 | `src/transcript.ts`      | JSONL writer, cache metrics, stdout lines                                     |
 | `src/config.ts`          | `.rowebotic-review/` loading                                                  |
@@ -249,3 +249,5 @@ At the end: the posted flag, new findings ranked by severity, remaining issues, 
 | `scripts/smoke-reviewers.ts` | Live run of two staggered reviewers on one commit, with no GitHub writes. Run from the reviewed repo; `RR_PROJECT` points at a dir holding `.rowebotic-review/` |
 
 Stack: Node 24, ESM, erasable TypeScript only. Deps: `openai`, `@pydantic/monty`, `@modelcontextprotocol/sdk`. Dev: `typescript` (`npm run check`), `oxlint` (`npm run lint`), `node --test` (`npm test`).
+
+Direct tool calls are recorded as `tool_exec` with name, call ID, turn, arguments, full results, duration, and error. Reviewer agents still expose only `python`; orchestrators expose `python` and `review_batch`.

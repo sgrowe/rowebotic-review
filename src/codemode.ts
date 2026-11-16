@@ -1,4 +1,4 @@
-// Codemode: the model's only tool is `python(code)`, run in a Monty sandbox
+// Codemode: the model's `python(code)` tool runs in a Monty sandbox
 // session per agent. Host functions (MCP tools, review, read_doc) are async
 // Python functions declared as typed stubs.
 
