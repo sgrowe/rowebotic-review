@@ -238,7 +238,7 @@ export type ReviewFunctionOptions = {
 }
 
 /**
- * The orchestrator's `review_batch` tool. It never raises. The first call
+ * Executes one reviewer for direct delegation, returning failures as results. The first call
  * starts at once; later calls wait until that reviewer's first model response
  * completes or fails, so they can read its cached instructions prefix. Each
  * reviewer's timeout starts after that wait.
