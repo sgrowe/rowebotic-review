@@ -71,25 +71,30 @@ export function mcpResultText(result: { content?: unknown; structuredContent?: u
   return parts.join('\n')
 }
 
-async function connect(name: string, transport: StdioClientTransport | StreamableHTTPClientTransport, only?: Set<string>) {
+export async function connect(name: string, transport: StdioClientTransport | StreamableHTTPClientTransport, only?: Set<string>) {
   const client = new Client({ name: 'rowebotic-review', version: '0.1.0' })
-  await client.connect(transport)
-  const tools: McpTool[] = []
-  let cursor: string | undefined
-  do {
-    const page = await client.listTools({ cursor })
-    for (const tool of page.tools) {
-      if (only && !only.has(tool.name)) continue
-      tools.push({
-        server: name,
-        name: tool.name,
-        description: tool.description ?? '',
-        inputSchema: tool.inputSchema as JsonSchema,
-      })
-    }
-    cursor = page.nextCursor
-  } while (cursor)
-  return new McpServer(name, client, tools, client.getInstructions())
+  try {
+    await client.connect(transport)
+    const tools: McpTool[] = []
+    let cursor: string | undefined
+    do {
+      const page = await client.listTools({ cursor })
+      for (const tool of page.tools) {
+        if (only && !only.has(tool.name)) continue
+        tools.push({
+          server: name,
+          name: tool.name,
+          description: tool.description ?? '',
+          inputSchema: tool.inputSchema as JsonSchema,
+        })
+      }
+      cursor = page.nextCursor
+    } while (cursor)
+    return new McpServer(name, client, tools, client.getInstructions())
+  } catch (error) {
+    await client.close().catch(() => {})
+    throw error
+  }
 }
 
 export async function startStdio(name: string, command: string, cwd: string): Promise<McpServer> {
@@ -110,13 +115,26 @@ export async function startGitHub(): Promise<McpServer> {
 
 export type McpServers = { jj: McpServer; psql: McpServer; github: McpServer }
 
-export async function startServers(cwd: string): Promise<McpServers> {
-  const [jj, psql, github] = await Promise.all([
-    startStdio('jj', 'jj-read-only-mcp', cwd),
-    startStdio('psql', 'psql-schema-mcp', cwd),
-    startGitHub(),
+export async function startServerGroup(starters: { [K in keyof McpServers]: () => Promise<McpServers[K]> }): Promise<McpServers> {
+  const [jj, psql, github] = await Promise.allSettled([
+    starters.jj(),
+    starters.psql(),
+    starters.github(),
   ])
-  return { jj, psql, github }
+  if (jj.status === 'fulfilled' && psql.status === 'fulfilled' && github.status === 'fulfilled') {
+    return { jj: jj.value, psql: psql.value, github: github.value }
+  }
+  await Promise.all([jj, psql, github].map(result => result.status === 'fulfilled' ? result.value.close() : undefined))
+  const failure = [jj, psql, github].find(result => result.status === 'rejected') as PromiseRejectedResult
+  throw failure.reason
+}
+
+export async function startServers(cwd: string): Promise<McpServers> {
+  return startServerGroup({
+    jj: () => startStdio('jj', 'jj-read-only-mcp', cwd),
+    psql: () => startStdio('psql', 'psql-schema-mcp', cwd),
+    github: startGitHub,
+  })
 }
 
 export async function closeServers(servers: Partial<McpServers>): Promise<void> {

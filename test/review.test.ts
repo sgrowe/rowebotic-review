@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
+import type { Monty } from '@pydantic/monty'
 import type { Concern } from '../src/config.ts'
+import type { McpServer, McpServers } from '../src/mcp.ts'
 import { UsageLimitError } from '../src/model.ts'
-import { type ChildRun, createReviewFunction, type Finding, reviewStub, transcriptFile } from '../src/review.ts'
+import { type ChildRun, createReviewFunction, type Finding, reviewStub, startReviewResources, transcriptFile } from '../src/review.ts'
 
 const concerns: Concern[] = [
   { name: 'design', description: 'd', when: 'always', body: 'design body' },
@@ -26,6 +28,18 @@ function setup(runChild: (child: ChildRun, events: string[]) => Promise<Finding[
 }
 
 const args = (key: string, concern = 'bugs') => ({ key, concern, scope: 'all', intent: 'i' })
+
+it('closes MCP servers when the Monty pool fails to start', async () => {
+  const closed: string[] = []
+  const server = (name: string) => ({ close: async () => { closed.push(name) } }) as McpServer
+  const servers: McpServers = { jj: server('jj'), psql: server('psql'), github: server('github') }
+  const failure = new Error('pool startup failed')
+  await assert.rejects(
+    startReviewResources(async () => servers, async (): Promise<Monty> => { throw failure }),
+    error => error === failure,
+  )
+  assert.deepEqual(closed.sort(), ['github', 'jj', 'psql'])
+})
 
 describe('reviewStub', () => {
   it('types concern as str and lists the names in the docstring', () => {

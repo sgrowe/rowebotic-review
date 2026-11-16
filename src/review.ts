@@ -205,6 +205,20 @@ export type ReviewOptions = {
 
 export type ReviewOutcome = { result: OrchestratorResult; headSha: string; transcriptPath: string }
 
+/** Acquire both runtime resources, releasing MCP clients if the pool fails to start. */
+export async function startReviewResources(
+  startMcp: () => Promise<McpServers>,
+  startPool: () => Promise<Monty>,
+): Promise<{ servers: McpServers; pool: Monty }> {
+  const servers = await startMcp()
+  try {
+    return { servers, pool: await startPool() }
+  } catch (error) {
+    await closeServers(servers)
+    throw error
+  }
+}
+
 async function prepare(project: ProjectConfig, signal: AbortSignal, log: (text: string) => void): Promise<void> {
   log('jj git fetch')
   await run('jj', ['git', 'fetch'], { cwd: project.root, signal })
@@ -366,7 +380,7 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
     const to = headSha
     const context = await fetchContext(github, repo, pr)
 
-    ;[servers, pool] = await Promise.all([startServers(project.root), createPool()])
+    ;({ servers, pool } = await startReviewResources(() => startServers(project.root), createPool))
     const mcp = servers
 
     // Reviewer functions and instructions (shared by all reviewers).
