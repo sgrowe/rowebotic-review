@@ -199,7 +199,7 @@ Batch scheduling, in-process:
 - Ctrl-C aborts the active batch and the watcher. A second Ctrl-C exits at once.
 - Cooldowns live in memory only. Run one watcher per repo.
 
-Each batch shares MCP connections and a Monty pool capped at `min(50, 9 × batchSize)`. Agents retain separate interpreter sessions, histories, turn state, cancellation, and transcripts. Worker queue time counts toward reviewer deadlines. The watcher shares a token store for single-flight OAuth refresh. Batch ID, size, and pool capacity are recorded for cache comparisons. Repository-wide role cache keys and per-PR reviewer startup gates remain unchanged.
+The first PR starts immediately after preparation and resource startup; subsequent PRs launch three seconds apart while previous reviews continue. Cancellation interrupts launch delays and prevents remaining PRs from starting, then drains active reviews before cleanup. Each batch shares MCP connections and a Monty pool capped at `min(60, 9 × batchSize)`. Agents retain separate interpreter sessions, histories, turn state, cancellation, and transcripts. Worker queue time counts toward reviewer deadlines. The watcher shares a token store for single-flight OAuth refresh. Batch ID, size, and pool capacity are recorded for cache comparisons. Repository-wide role cache keys and per-PR reviewer startup gates remain unchanged.
 
 ## Transcript
 

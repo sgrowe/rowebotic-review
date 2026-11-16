@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import type { Monty } from '@pydantic/monty'
 import { AuthError, homeDir, TokenStore } from './auth.ts'
 import { describeError, modelCaller, runAgent } from './agent.ts'
@@ -355,8 +356,10 @@ export async function createReviewModel(): Promise<ReturnType<typeof modelCaller
   return modelCaller(createClient(tokens), tokens)
 }
 
+export const PR_START_INTERVAL_MS = 3000
+
 export function batchPoolCapacity(size: number): number {
-  return Math.min(50, size * 9)
+  return Math.min(60, size * 9)
 }
 
 /** Preparation and shared resources belong to the batch, never an individual PR. */
@@ -365,13 +368,34 @@ export async function runBatch<T, R, O>(items: T[], lifecycle: {
   start: () => Promise<R>
   review: (item: T, resources: R) => Promise<O>
   close: (resources: R) => Promise<void>
+  signal?: AbortSignal
+  wait?: (ms: number, signal?: AbortSignal) => Promise<unknown>
 }): Promise<PromiseSettledResult<O>[]> {
   if (!items.length) return []
+  lifecycle.signal?.throwIfAborted()
   await lifecycle.prepare()
   const resources = await lifecycle.start()
+  const pending: Promise<PromiseSettledResult<O>>[] = []
+  const wait = lifecycle.wait ?? ((ms, signal) => sleep(ms, undefined, { signal }))
   try {
-    return await Promise.allSettled(items.map(async item => lifecycle.review(item, resources)))
+    for (const [index, item] of items.entries()) {
+      lifecycle.signal?.throwIfAborted()
+      if (index > 0) await wait(PR_START_INTERVAL_MS, lifecycle.signal)
+      lifecycle.signal?.throwIfAborted()
+      // Attach rejection handling immediately: an earlier review may fail while
+      // the next start is delayed, without interrupting its peers.
+      pending.push((async () => lifecycle.review(item, resources))().then(
+        value => ({ status: 'fulfilled', value }),
+        reason => ({ status: 'rejected', reason }),
+      ))
+    }
+    return await Promise.all(pending)
+  } catch (error) {
+    lifecycle.signal?.throwIfAborted()
+    throw error
   } finally {
+    // Cancellation can interrupt launching, but active reviews still own resources.
+    await Promise.all(pending)
     await lifecycle.close(resources)
   }
 }
@@ -392,8 +416,9 @@ export async function reviewBatch(options: {
   const batchSize = options.prs.length
   const poolCapacity = batchPoolCapacity(batchSize)
   const started = Date.now()
-  print(`Batch ${batchId}: ${batchSize} PRs, ${poolCapacity} workers`)
+  print(`Batch ${batchId}: ${batchSize} PRs, ${poolCapacity} workers, ${PR_START_INTERVAL_MS / 1000}s between PR starts`)
   const results = await runBatch(options.prs, {
+    signal: options.signal,
     prepare: () => prepare(project, options.signal, print),
     start: () => startReviewResources(() => startServers(project.root), () => createPool(poolCapacity)),
     review: (pr, resources) => reviewPr({

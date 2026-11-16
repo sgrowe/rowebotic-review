@@ -5,7 +5,7 @@ import type { Monty } from '@pydantic/monty'
 import type { Concern } from '../src/config.ts'
 import type { McpServer, McpServers } from '../src/mcp.ts'
 import { UsageLimitError } from '../src/model.ts'
-import { type ChildRun, createReviewFunction, type Finding, reviewStub, runBatch, startReviewResources, transcriptFile } from '../src/review.ts'
+import { batchPoolCapacity, PR_START_INTERVAL_MS, type ChildRun, createReviewFunction, type Finding, reviewStub, runBatch, startReviewResources, transcriptFile } from '../src/review.ts'
 
 const concerns: Concern[] = [
   { name: 'design', description: 'd', when: 'always', body: 'design body' },
@@ -144,6 +144,7 @@ describe('batch lifecycle', () => {
     const closing = new Promise<void>(resolve => { finishClose = resolve })
     let settled = false
     const batch = runBatch([1, 2], {
+      wait: async () => {},
       prepare: async () => { events.push('prepare') },
       start: async () => { events.push('start'); return shared },
       review: async (number, resources) => {
@@ -185,4 +186,61 @@ describe('batch lifecycle', () => {
     await assert.rejects(runBatch([1], lifecycle), /fetch failed/)
     assert.equal(starts, 0)
   })
+})
+
+it('scales pool capacity up to sixty workers', () => {
+  assert.equal(batchPoolCapacity(1), 9)
+  assert.equal(batchPoolCapacity(6), 54)
+  assert.equal(batchPoolCapacity(7), 60)
+  assert.equal(batchPoolCapacity(10), 60)
+})
+
+it('starts immediately then spaces overlapping PRs three seconds apart in selection order', async () => {
+  let now = 0
+  const starts: number[] = []
+  const times: number[] = []
+  const releases: (() => void)[] = []
+  const delays: number[] = []
+  let finishFirst!: () => void
+  const first = new Promise<void>(resolve => { finishFirst = resolve })
+  const batch = runBatch([1, 2, 3], {
+    prepare: async () => {}, start: async () => ({}), close: async () => {},
+    wait: async ms => { delays.push(ms); await new Promise<void>(resolve => { releases.push(() => { now += ms; resolve() }) }) },
+    review: async item => { starts.push(item); times.push(now); if (item === 1) await first; if (item === 2) throw new Error('failed'); return item },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(starts, [1])
+  releases.shift()!()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(starts, [1, 2])
+  releases.shift()!()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(starts, [1, 2, 3])
+  assert.deepEqual(times, [0, 3000, 6000])
+  assert.deepEqual(delays, [PR_START_INTERVAL_MS, PR_START_INTERVAL_MS])
+  finishFirst()
+  assert.deepEqual((await batch).map(r => r.status), ['fulfilled', 'rejected', 'fulfilled'])
+})
+
+it('aborts launch waits and drains active reviews before closing shared resources', async () => {
+  const controller = new AbortController()
+  const starts: number[] = []
+  let closed = false
+  let finish!: () => void
+  const active = new Promise<void>(resolve => { finish = resolve })
+  const batch = runBatch([1, 2, 3], {
+    signal: controller.signal,
+    prepare: async () => {}, start: async () => ({}),
+    review: async item => { starts.push(item); await active; return item },
+    close: async () => { closed = true },
+  })
+  const rejected = assert.rejects(batch, /cancelled/)
+  await new Promise(resolve => setImmediate(resolve))
+  controller.abort(new Error('cancelled'))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(starts, [1])
+  assert.equal(closed, false)
+  finish()
+  await rejected
+  assert.equal(closed, true)
 })
