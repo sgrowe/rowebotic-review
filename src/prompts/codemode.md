@@ -7,6 +7,7 @@ The sandbox runs Monty, a subset of Python:
 - Only these standard library modules can be imported: `sys`, `typing`, `asyncio`, `math`, `json`, `re`, `unicodedata`, `datetime`, `time`, `random`, `os`, `pathlib`. Import them before use. There are no third-party libraries.
 - There is no filesystem, network, environment or clock access. Read code only through the functions below.
 - No class inheritance, `del`, `yield`, `import *`, or task APIs other than `asyncio.gather`.
+- Avoid `next(generator_expression)`: Monty raises an iterator error. Use a list comprehension and check whether it is empty before taking `[0]`, or use a loop with `break`.
 - State is kept between calls, like a REPL: variables and functions you define stay available.
 - A name's type is fixed by its first binding in the session: a plain assignment, a `for` loop target or a tuple unpacking, in any earlier call. Binding a value of another type to that name later is a type error, for example a tuple of a different length from `asyncio.gather`. A string or number constant fixes the type to that exact value: after `intent = "a"`, a later `intent = "b"` fails. Use new, descriptive names in each script (`diff`, `files`, `schema`, not `r`, `x` or `f`), annotate constants you may reassign (`intent: str = "a"`), or re-declare the type with an annotation: `r: str = ...`.
 
@@ -25,7 +26,7 @@ print(show)
 files
 ```
 
-Each script is type-checked against the function signatures before it runs. A type error, syntax error or exception comes back as the tool result with a traceback; fix the script and run it again.
+Each script is type-checked against the function signatures before it runs. A type error, syntax error or exception comes back as the tool result with a traceback. After a runtime failure, newly introduced variables may exist but be unknown to the type checker. Recreate needed values from safe reads before referencing them. Earlier mutations and tool calls may already have happened; check their effects before repeating writes.
 
 The last expression's value is returned, so end with the value you want to see. Strings are returned as-is; other values as JSON. Use `print()` for anything else you want to see. Output over 300,000 characters is cut from the middle, so filter, slice or search large results in Python before you return them.
 
