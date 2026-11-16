@@ -1,12 +1,15 @@
-// Watcher: review matching PRs one at a time, using GitHub review history as
+// Watcher: review matching PRs in non-overlapping batches, using GitHub review history as
 // the only durable state.
 
 import { setTimeout as sleep } from 'node:timers/promises'
 import { AuthError } from './auth.ts'
-import { type GitHub, isReviewed, type Repo } from './github.ts'
+import { type GitHub, isReviewed, type Repo, type PullRequest } from './github.ts'
 import { UsageLimitError } from './model.ts'
 
 export const INTERVAL_MS = 3 * 60 * 1000
+export const IDLE_MS = 90_000
+export const DEBOUNCE_MS = 120_000
+export const MAX_BATCH_SIZE = 10
 export const RECENT_MS = 5 * 24 * 60 * 60 * 1000
 const UNKNOWN_RESET_WAIT_MS = 60 * 60 * 1000
 
@@ -19,7 +22,7 @@ export type WatchDeps = {
   repo: Repo
   login: string
   search: string
-  review: (prNumber: number, signal: AbortSignal) => Promise<unknown>
+  reviewBatch: (prs: PullRequest[], signal: AbortSignal) => Promise<PromiseSettledResult<{ headSha: string }>[]>
   log: (text: string) => void
   signal: AbortSignal
   now?: () => number
@@ -39,17 +42,23 @@ export class Watcher {
     this.#sleep = deps.sleep ?? ((ms, signal) => sleep(ms, undefined, { signal }))
   }
 
-  /** Reviews (or fails) at most one PR. Returns true if it handled one. */
-  async reviewNext(): Promise<boolean> {
+  /** Select and finish one batch before allowing another search. */
+  async reviewBatch(): Promise<boolean> {
     const { github, repo, login, log, signal } = this.#deps
     const cutoff = this.#now() - RECENT_MS
     const numbers = await github.search(repo, searchQuery(this.#deps.search, this.#now()))
-    for (const number of numbers) {
+    const selected: PullRequest[] = []
+    const retry = (number: number, error: unknown) => {
+      log(`PR #${number}: ${error instanceof Error ? error.message : String(error)}. Retrying in 3 minutes.`)
+      this.nextReviewAt.set(number, this.#now() + INTERVAL_MS)
+    }
+    for (const number of new Set(numbers)) {
+      signal.throwIfAborted()
       if ((this.nextReviewAt.get(number) ?? 0) > this.#now()) continue
       try {
         const pr = await github.pullRequest(repo, number)
-        // `updated` also moves on comments and labels, so check the head commit itself.
-        if ((await github.headCommittedAt(repo, pr.head.sha)) < cutoff) {
+        const committedAt = await github.headCommittedAt(repo, pr.head.sha)
+        if (committedAt < cutoff) {
           if (this.#staleHeads.get(number) !== pr.head.sha) {
             this.#staleHeads.set(number, pr.head.sha)
             log(`PR #${number}: head commit is older than 5 days; skipping.`)
@@ -61,30 +70,52 @@ export class Watcher {
         if (reviews.some(review => review.state === 'PENDING')) {
           throw new Error('a pending review already exists; submit or discard it manually')
         }
-
-        log(`PR #${number}: reviewing ${pr.head.ref} at ${pr.head.sha.slice(0, 7)}.`)
-        await this.#deps.review(number, signal)
-
-        const current = await github.pullRequest(repo, number)
-        const submitted = await github.reviewsBy(repo, number, login)
-        if (isReviewed(current.head.sha, submitted)) {
-          log(`PR #${number}: current head has been reviewed.`)
-        } else if (current.head.sha !== pr.head.sha && isReviewed(pr.head.sha, submitted)) {
-          log(`PR #${number}: new commits arrived; cooling down for 3 minutes.`)
-        } else {
-          throw new Error('no submitted review found for the reviewed head; see the output above')
-        }
-        this.nextReviewAt.set(number, this.#now() + INTERVAL_MS)
-        return true
+        const previouslyReviewed = reviews.some(review => review.state !== 'PENDING' && Boolean(review.submitted_at))
+        if (previouslyReviewed && committedAt > this.#now() - DEBOUNCE_MS) continue
+        selected.push(pr)
+        if (selected.length === MAX_BATCH_SIZE) break
       } catch (error) {
         if (signal.aborted || error instanceof UsageLimitError || error instanceof AuthError) throw error
-        log(`PR #${number}: ${error instanceof Error ? error.message : String(error)}. Retrying in 3 minutes.`)
-        this.nextReviewAt.set(number, this.#now() + INTERVAL_MS)
-        // Refresh the list before choosing another PR.
-        return true
+        retry(number, error)
       }
     }
-    return false
+    if (!selected.length) return false
+    for (const pr of selected) log(`PR #${pr.number}: reviewing ${pr.head.ref} at ${pr.head.sha.slice(0, 7)}.`)
+    const results = await this.#deps.reviewBatch(selected, signal)
+    signal.throwIfAborted()
+    const fatal: (UsageLimitError | AuthError)[] = []
+    for (const [index, pr] of selected.entries()) {
+      try {
+        const result = results[index]
+        if (!result) throw new Error('missing batch result')
+        if (result.status === 'rejected') throw result.reason
+        if (result.value.headSha !== pr.head.sha) throw new Error('review returned a different head than selected')
+        const current = await github.pullRequest(repo, pr.number)
+        const submitted = await github.reviewsBy(repo, pr.number, login)
+        if (!isReviewed(pr.head.sha, submitted)) {
+          throw new Error('no submitted review found for the reviewed head; see the output above')
+        }
+        if (isReviewed(current.head.sha, submitted)) {
+          log(`PR #${pr.number}: current head has been reviewed.`)
+        } else {
+          log(`PR #${pr.number}: new commits arrived; eligibility will be checked next batch.`)
+        }
+        this.nextReviewAt.delete(pr.number)
+      } catch (error) {
+        if (signal.aborted) throw error
+        if (error instanceof UsageLimitError || error instanceof AuthError) fatal.push(error)
+        else retry(pr.number, error)
+      }
+    }
+    const auth = fatal.find(error => error instanceof AuthError)
+    if (auth) throw auth
+    const limits = fatal.filter((error): error is UsageLimitError => error instanceof UsageLimitError)
+    if (limits.length) {
+      // Convert unknown reset times to the existing one-hour fallback; run adds one minute.
+      const reset = Math.max(...limits.map(error => error.resetsAt ?? this.#now() + UNKNOWN_RESET_WAIT_MS - 60_000))
+      throw new UsageLimitError(limits[0]!.message, reset)
+    }
+    return true
   }
 
   async run(): Promise<void> {
@@ -92,8 +123,8 @@ export class Watcher {
     log(`Watching ${this.#deps.repo.owner}/${this.#deps.repo.name} as ${this.#deps.login}: ${this.#deps.search}`)
     while (!signal.aborted) {
       try {
-        if (await this.reviewNext()) continue
-        log('No PRs ready. Checking again in 3 minutes.')
+        if (await this.reviewBatch()) continue
+        log('No PRs ready. Checking again in 90 seconds.')
       } catch (error) {
         if (signal.aborted) return
         if (error instanceof AuthError) throw error
@@ -103,9 +134,9 @@ export class Watcher {
           await this.#sleep(wait, signal).catch(() => {})
           continue
         }
-        log(`GitHub check failed: ${error instanceof Error ? error.message : String(error)}. Retrying in 3 minutes.`)
+        log(`Batch check failed: ${error instanceof Error ? error.message : String(error)}. Retrying in 90 seconds.`)
       }
-      await this.#sleep(INTERVAL_MS, signal).catch(() => {})
+      await this.#sleep(IDLE_MS, signal).catch(() => {})
     }
   }
 }
