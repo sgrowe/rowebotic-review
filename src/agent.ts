@@ -23,6 +23,16 @@ export const PYTHON_TOOL: Item = {
 
 export const NUDGE = 'Finish any checks you have not done, then reply with the final JSON.'
 
+export type AgentTool = {
+  schema: Item
+  call: (args: unknown, signal: AbortSignal) => Promise<unknown>
+}
+
+/** A malformed tool request the model can correct without stopping the run. */
+export class ToolArgumentError extends Error {
+  override name = 'ToolArgumentError'
+}
+
 export type AgentSpec = {
   id: string
   role: AgentRole
@@ -33,6 +43,7 @@ export type AgentSpec = {
   firstMessage: string
   codemode: Pick<CodeMode, 'run'>
   signal: AbortSignal
+  additionalTools?: AgentTool[]
   /** Called once, when the first model response completes or fails. */
   onFirstResponse?: () => void
 }
@@ -79,6 +90,9 @@ export function instructionsHash(instructions: string): string {
 
 export async function runAgent(spec: AgentSpec, deps: AgentDeps): Promise<unknown> {
   const { transcript } = deps
+  const additionalTools = [...(spec.additionalTools ?? [])]
+  const tools = [PYTHON_TOOL, ...additionalTools.map(tool => tool.schema)]
+  if (new Set(tools.map(tool => tool.name)).size !== tools.length) throw new Error('Duplicate agent tool name')
   // session-id steers Codex routing: agents that share a cache key must share
   // it too, or a new agent's first request misses (spike 5: 0/6 vs 5/6 hits).
   const sessionId = spec.promptCacheKey
@@ -100,7 +114,7 @@ export async function runAgent(spec: AgentSpec, deps: AgentDeps): Promise<unknow
     instructionsChars: spec.instructions.length,
     promptCacheKey: spec.promptCacheKey,
     sessionId,
-    tools: [PYTHON_TOOL.name],
+    tools: tools.map(tool => tool.name),
   })
   transcript.write('request', spec.id, { turn: 1, items: input })
 
@@ -113,7 +127,7 @@ export async function runAgent(spec: AgentSpec, deps: AgentDeps): Promise<unknow
         response = await deps.model(
           {
             instructions: spec.instructions,
-            tools: [PYTHON_TOOL],
+            tools,
             textFormat: spec.textFormat,
             promptCacheKey: spec.promptCacheKey,
             sessionId,
@@ -144,7 +158,7 @@ export async function runAgent(spec: AgentSpec, deps: AgentDeps): Promise<unknow
       if (calls.length > 0) {
         const results: Item[] = []
         for (const call of calls) {
-          results.push({ type: 'function_call_output', call_id: call.call_id, output: await runCall(spec, transcript, turn, call) })
+          results.push({ type: 'function_call_output', call_id: call.call_id, output: await runCall(spec, additionalTools, transcript, turn, call) })
         }
         input.push(...results)
         transcript.write('request', spec.id, { turn: turn + 1, items: results })
@@ -176,8 +190,35 @@ export async function runAgent(spec: AgentSpec, deps: AgentDeps): Promise<unknow
   }
 }
 
-async function runCall(spec: AgentSpec, transcript: Transcript, turn: number, call: Item): Promise<string> {
-  if (call.name !== PYTHON_TOOL.name) return `Unknown tool ${call.name}. The only tool is python.`
+async function runCall(spec: AgentSpec, additionalTools: AgentTool[], transcript: Transcript, turn: number, call: Item): Promise<string> {
+  spec.signal.throwIfAborted()
+  if (call.name !== PYTHON_TOOL.name) {
+    const tool = additionalTools.find(tool => tool.schema.name === call.name)
+    if (!tool) return `Unknown tool ${call.name}. Available tools: ${[PYTHON_TOOL.name, ...additionalTools.map(tool => tool.schema.name)].join(', ')}.`
+    const started = Date.now()
+    let args: unknown
+    let result: unknown
+    let errorText: string | null = null
+    transcript.log(spec.id, `${call.name}: start`)
+    try {
+      try {
+        args = JSON.parse(call.arguments ?? '{}')
+      } catch {
+        throw new ToolArgumentError('Tool arguments must be valid JSON')
+      }
+      result = await tool.call(args, spec.signal)
+      return JSON.stringify(result) ?? 'null'
+    } catch (error) {
+      errorText = describeError(error)
+      if (spec.signal.aborted) throw spec.signal.reason ?? error
+      if (error instanceof ToolArgumentError) return JSON.stringify({ error: error.message })
+      throw error
+    } finally {
+      const durationMs = Date.now() - started
+      transcript.write('tool_exec', spec.id, { turn, callId: call.call_id, tool: call.name, arguments: args ?? call.arguments, result: result ?? null, error: errorText, durationMs })
+      transcript.log(spec.id, `${call.name}: ${errorText ? 'failed' : 'done'} in ${(durationMs / 1000).toFixed(1)}s${errorText ? `: ${errorText}` : ''}`)
+    }
+  }
   let code: string
   try {
     code = String(JSON.parse(call.arguments ?? '{}').code ?? '')
