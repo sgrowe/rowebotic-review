@@ -3,6 +3,8 @@
 # Rebase onto trunk so `make migrate` runs trunk's migrations, then install and migrate.
 # PGDATABASE comes from the environment (direnv: .envrc sets humaans_hpi).
 set -e
+# Resolve repository-pinned tools even when launched from a noninteractive shell.
+export PATH="$HOME/.local/share/mise/shims:$PATH"
 jj rebase -d 'trunk()' --simplify-parents
 pnpm install --frozen-lockfile
 make migrate
