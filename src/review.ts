@@ -359,6 +359,23 @@ export function batchPoolCapacity(size: number): number {
   return Math.min(50, size * 9)
 }
 
+/** Preparation and shared resources belong to the batch, never an individual PR. */
+export async function runBatch<T, R, O>(items: T[], lifecycle: {
+  prepare: () => Promise<void>
+  start: () => Promise<R>
+  review: (item: T, resources: R) => Promise<O>
+  close: (resources: R) => Promise<void>
+}): Promise<PromiseSettledResult<O>[]> {
+  if (!items.length) return []
+  await lifecycle.prepare()
+  const resources = await lifecycle.start()
+  try {
+    return await Promise.allSettled(items.map(async item => lifecycle.review(item, resources)))
+  } finally {
+    await lifecycle.close(resources)
+  }
+}
+
 export async function reviewBatch(options: {
   root: string
   prs: PullRequest[]
@@ -376,21 +393,22 @@ export async function reviewBatch(options: {
   const poolCapacity = batchPoolCapacity(batchSize)
   const started = Date.now()
   print(`Batch ${batchId}: ${batchSize} PRs, ${poolCapacity} workers`)
-  await prepare(project, options.signal, print)
-  const resources = await startReviewResources(() => startServers(project.root), () => createPool(poolCapacity))
-  try {
-    const results = await Promise.allSettled(options.prs.map(pr => reviewPr({
+  const results = await runBatch(options.prs, {
+    prepare: () => prepare(project, options.signal, print),
+    start: () => startReviewResources(() => startServers(project.root), () => createPool(poolCapacity)),
+    review: (pr, resources) => reviewPr({
       root: options.root, prNumber: pr.number, signal: options.signal,
       print: line => print(`[PR #${pr.number}] ${line}`),
       prepared: { project, repo, pr, ...resources, model: options.model, batchId, batchSize, poolCapacity },
-    })))
-    const succeeded = results.filter(r => r.status === 'fulfilled').length
-    print(`Batch ${batchId}: ${succeeded} completed, ${batchSize - succeeded} failed in ${Math.round((Date.now() - started) / 1000)}s`)
-    return results
-  } finally {
-    await resources.pool.close().catch(() => {})
-    await closeServers(resources.servers)
-  }
+    }),
+    close: async resources => {
+      await resources.pool.close().catch(() => {})
+      await closeServers(resources.servers)
+    },
+  })
+  const succeeded = results.filter(r => r.status === 'fulfilled').length
+  print(`Batch ${batchId}: ${succeeded} completed, ${batchSize - succeeded} failed in ${Math.round((Date.now() - started) / 1000)}s`)
+  return results
 }
 
 export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {

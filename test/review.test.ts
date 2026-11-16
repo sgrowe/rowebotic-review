@@ -5,7 +5,7 @@ import type { Monty } from '@pydantic/monty'
 import type { Concern } from '../src/config.ts'
 import type { McpServer, McpServers } from '../src/mcp.ts'
 import { UsageLimitError } from '../src/model.ts'
-import { type ChildRun, createReviewFunction, type Finding, reviewStub, startReviewResources, transcriptFile } from '../src/review.ts'
+import { type ChildRun, createReviewFunction, type Finding, reviewStub, runBatch, startReviewResources, transcriptFile } from '../src/review.ts'
 
 const concerns: Concern[] = [
   { name: 'design', description: 'd', when: 'always', body: 'design body' },
@@ -130,5 +130,59 @@ describe('transcriptFile', () => {
   it('names the file by time, repo, PR and run id', () => {
     const path = transcriptFile({ owner: 'o', name: 'r' }, 12, 'abcd1234', new Date('2026-11-05T12:00:00.000Z'))
     assert.match(path, /\.rowebotic-review\/sessions\/2026-11-05T12-00-00-000Z_o-r_pr12_abcd1234\.jsonl$/)
+  })
+})
+
+
+describe('batch lifecycle', () => {
+  it('prepares once, shares resources, and waits for peers and cleanup after a failure', async () => {
+    const events: string[] = []
+    const shared = {}
+    let finishPeer!: () => void
+    let finishClose!: () => void
+    const peer = new Promise<void>(resolve => { finishPeer = resolve })
+    const closing = new Promise<void>(resolve => { finishClose = resolve })
+    let settled = false
+    const batch = runBatch([1, 2], {
+      prepare: async () => { events.push('prepare') },
+      start: async () => { events.push('start'); return shared },
+      review: async (number, resources) => {
+        assert.equal(resources, shared)
+        events.push(`review ${number}`)
+        if (number === 1) throw new Error('first failed')
+        await peer
+        events.push('peer finished')
+        return number
+      },
+      close: async resources => {
+        assert.equal(resources, shared)
+        events.push('close')
+        await closing
+      },
+    }).then(results => { settled = true; return results })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(events, ['prepare', 'start', 'review 1', 'review 2'])
+    assert.equal(settled, false)
+    finishPeer()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(events.slice(-2), ['peer finished', 'close'])
+    assert.equal(settled, false)
+    finishClose()
+    const results = await batch
+    assert.equal(results[0]!.status, 'rejected')
+    assert.deepEqual(results[1], { status: 'fulfilled', value: 2 })
+  })
+
+  it('does not start resources after preparation fails or for empty batches', async () => {
+    let starts = 0
+    const lifecycle = {
+      prepare: async () => { throw new Error('fetch failed') },
+      start: async () => { starts++; return {} },
+      review: async () => 1,
+      close: async () => {},
+    }
+    assert.deepEqual(await runBatch([], lifecycle), [])
+    await assert.rejects(runBatch([1], lifecycle), /fetch failed/)
+    assert.equal(starts, 0)
   })
 })
