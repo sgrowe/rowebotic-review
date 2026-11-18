@@ -10,6 +10,7 @@ import {
   collectOutput,
   createClient,
   FatalModelError,
+  requestBody,
   retryAfterMs,
   TransientModelError,
   UsageLimitError,
@@ -174,6 +175,19 @@ describe('collectOutput', () => {
   })
 })
 
+describe('requestBody', () => {
+  it('keeps one developer prefix before appended history without modifying the input', () => {
+    const input = [...request.input]
+    const req = { ...request, input }
+    const first = requestBody(req)
+    const toolOutput = { type: 'function_call_output', call_id: 'call_1', output: 'result' }
+    input.push(item, toolOutput)
+
+    assert.deepEqual(requestBody(req).input, [...first.input, item, toolOutput])
+    assert.deepEqual(input, [...request.input, item, toolOutput])
+  })
+})
+
 // ------------------------------------------------------------ streams
 
 describe('callModel', () => {
@@ -185,7 +199,12 @@ describe('callModel', () => {
     assert.equal(response.requestId, 'req_1')
     assert.equal(response.turnState, 'ts_1')
     const body = JSON.parse(fake.bodies[0]!)
-    assert.equal(body.model, 'gpt-6.1-sol')
+    assert.equal(body.model, 'gpt-6.2-sol')
+    assert.equal(Object.hasOwn(body, 'instructions'), false)
+    assert.deepEqual(body.input, [
+      { role: 'developer', content: [{ type: 'input_text', text: 'review' }] },
+      ...request.input,
+    ])
     assert.equal(body.store, false)
     assert.equal(body.parallel_tool_calls, false)
     assert.equal(body.prompt_cache_key, 'o/r:reviewer')

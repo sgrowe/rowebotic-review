@@ -5,7 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import OpenAI, { APIConnectionError, APIError, APIUserAbortError } from 'openai'
 import { AuthError, type TokenStore } from './auth.ts'
 
-export const MODEL = 'gpt-6.1-sol'
+export const MODEL = 'gpt-6.2-sol'
 export const REASONING_EFFORT = 'high'
 export const CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex'
 export const IDLE_TIMEOUT_MS = 5 * 60 * 1000
@@ -40,8 +40,11 @@ export type ModelResponse = {
 export function requestBody(req: AgentRequest): Item {
   return {
     model: MODEL,
-    instructions: req.instructions,
-    input: req.input,
+    // GPT-6.2 caches reusable instructions when they start the input prefix.
+    input: [
+      { role: 'developer', content: [{ type: 'input_text', text: req.instructions }] },
+      ...req.input,
+    ],
     tools: req.tools,
     tool_choice: 'auto',
     parallel_tool_calls: false,

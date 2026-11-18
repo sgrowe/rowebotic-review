@@ -38,7 +38,7 @@ Install: `npm run install-locally` (runs `npm install && npm link`). Node 24 run
 
 ## Model and transport
 
-- Model `gpt-6.1-sol`, `reasoning.effort: "high"`, both hardcoded.
+- The orchestrator and reviewers use `gpt-6.2-sol` at `high` reasoning effort. Both settings are hardcoded.
 - ChatGPT subscription through the Codex backend: `openai` SDK with `baseURL: https://chatgpt.com/backend-api/codex`.
 - HTTP SSE through the raw `client.responses.create({ stream: true })`. Not `responses.stream()`: its strict event checks turn Codex quirks into errors. No WebSocket.
 - Stateless: `store: false` and the full input on every request.
@@ -48,7 +48,8 @@ Install: `npm run install-locally` (runs `npm install && npm link`). Node 24 run
 Request body. Everything except `input` is constant for an agent:
 
 ```
-{ model, instructions, input,
+{ model,
+  input: [{ role: "developer", content: [{ type: "input_text", text: instructions }] }, ...history],
   tools: [{ type: "function", name: "python", parameters: { code: string }, strict: true }],
   tool_choice: "auto", parallel_tool_calls: false,
   reasoning: { effort: "high", summary: "auto" },
@@ -69,9 +70,9 @@ Request body. Everything except `input` is constant for an agent:
 
 Rules, per agent:
 
-- `instructions`, tools, `text.format`, reasoning and `prompt_cache_key` never change.
-- `instructions` hold no timestamps or run data. Run data goes in the first user message. So the orchestrator's instructions are the same across runs of one repo, and all reviewers share theirs.
-- Input is append-only, and identical across retries.
+- Each request begins with the same developer message so GPT-6.2 can cache the instructions. Tools, `text.format`, reasoning and `prompt_cache_key` also stay fixed for the agent.
+- Run data goes in the first user message. The orchestrator's instructions are the same across runs of one repo, and all reviewers share theirs.
+- Conversation history after the developer message is append-only. The full input is identical across retries.
 - Output items are collected from `response.output_item.done` events by `output_index` and appended verbatim, including encrypted reasoning. Codex sends an **empty** `response.completed.output` (seen in the spike), so `completed.output` is used only as a fallback when nothing streamed, and to fill missing `encrypted_content`.
 - `response.completed` or `response.done` ends a response.
 
@@ -81,9 +82,9 @@ Cache keys (≤ 64 characters, one constant each): `<owner/repo>:orchestrator` a
 
 **Turn state**: Codex returns an `x-codex-turn-state` header on each response. Each agent sends back the latest one it received, as the Codex CLI does. In the spike this gave 1 cache miss in 28 follow-up turns, against 3 in 28 without it. Reviewers do not share each other's turn state: sending a sibling's turn state on a reviewer's first request made hits worse (5/8 against 7/8).
 
-Spike findings (2026-11-05):
+GPT-6.1 Sol spike findings (2026-11-05):
 
-- The full body above is accepted, and replaying `reasoning` / `function_call` / `function_call_output` items under `store: false` works.
+- The spike sent its instructions as a top-level field and replayed `reasoning` / `function_call` / `function_call_output` items under `store: false`.
 - `session-id` steers routing. Spike 5 used the real reviewer instructions (~4.3k tokens) with a fresh nonce per trial: agent A's first request, then agent B's. B hit A's cache in 0/6 trials with per-agent `session-id`s, and in 5/6 with `session-id` = cache key. An earlier, smaller spike had suggested no difference.
 - `prompt_cache_retention: "24h"` is rejected with 400 "Unsupported parameter". The orchestrator's turn after a long `review_batch` call can therefore miss the cache when the gap is longer than the cache TTL.
 - Even with everything right, some requests miss the whole prefix (about 1 in 6 to 1 in 10 in the spikes and the smoke run). This looks like backend routing, which we can't control.
