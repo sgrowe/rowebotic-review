@@ -182,9 +182,7 @@ In the reviewed repo, under `.rowebotic-review/`:
 | `instructions.md`    | Optional. Appended to both agents' instructions                                                                        |
 | `prepare`            | Optional executable, run after `jj git fetch`. Failure warns and continues                                             |
 
-`examples/hpi/.rowebotic-review/` holds the hpi setup: the seven concerns ported from `.pi/code-review/review-*`, the React effects doc, the hpi rules (AGENTS.md walk, ATHENA.md, local DB semantics) in `instructions.md`, and a `prepare` that runs `jj rebase -d 'trunk()' --simplify-parents && pnpm install --frozen-lockfile && make migrate`. The rebase is needed so `make migrate` runs trunk's migrations.
-
-`PGDATABASE` is inherited from the environment (direnv in hpi). Start `watch` from a shell where it is set; `watch` warns when it is not.
+`PGDATABASE` is inherited from the environment. Start `watch` from a shell where it is set. The watcher warns when it is missing.
 
 ## Watcher
 
