@@ -208,7 +208,7 @@ describe('callModel', () => {
     assert.equal(body.store, false)
     assert.equal(body.parallel_tool_calls, false)
     assert.equal(body.prompt_cache_key, 'o/r:reviewer')
-    assert.deepEqual(body.reasoning, { effort: 'high', summary: 'auto' })
+    assert.deepEqual(body.reasoning, { effort: 'medium', summary: 'auto' })
     assert.equal(fake.headers[0]!.get('session-id'), 'sess')
     assert.equal(fake.headers[0]!.get('chatgpt-account-id'), 'acc')
     assert.equal(fake.headers[0]!.get('authorization'), 'Bearer access')

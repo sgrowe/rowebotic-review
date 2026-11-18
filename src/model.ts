@@ -6,7 +6,7 @@ import OpenAI, { APIConnectionError, APIError, APIUserAbortError } from 'openai'
 import { AuthError, type TokenStore } from './auth.ts'
 
 export const MODEL = 'gpt-6.2-sol'
-export const REASONING_EFFORT = 'high'
+export const REASONING_EFFORT = 'medium'
 export const CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex'
 export const IDLE_TIMEOUT_MS = 5 * 60 * 1000
 export const BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 60_000]

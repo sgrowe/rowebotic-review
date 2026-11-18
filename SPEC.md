@@ -38,7 +38,7 @@ Run `npm run install-locally` to install and link the tool. Node 24 runs the `.t
 
 ## Model and transport
 
-- The orchestrator and reviewers use `gpt-6.2-sol` at `high` reasoning effort. Both settings are hardcoded.
+- The orchestrator and reviewers use `gpt-6.2-sol` at `medium` reasoning effort. Both settings are hardcoded.
 - ChatGPT subscription through the Codex backend: `openai` SDK with `baseURL: https://chatgpt.com/backend-api/codex`.
 - HTTP SSE through the raw `client.responses.create({ stream: true })`. Not `responses.stream()`: its strict event checks turn Codex quirks into errors. No WebSocket.
 - Stateless: `store: false` and the full input on every request.
@@ -52,7 +52,7 @@ Request body. Everything except `input` is constant for an agent:
   input: [{ role: "developer", content: [{ type: "input_text", text: instructions }] }, ...history],
   tools: [{ type: "function", name: "python", parameters: { code: string }, strict: true }],
   tool_choice: "auto", parallel_tool_calls: false,
-  reasoning: { effort: "high", summary: "auto" },
+  reasoning: { effort: "medium", summary: "auto" },
   store: false, stream: true, include: ["reasoning.encrypted_content"],
   prompt_cache_key,
   text: { format: { type: "json_schema", name, strict: true, schema }, verbosity: "low" } }
