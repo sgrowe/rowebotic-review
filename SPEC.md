@@ -208,7 +208,7 @@ One file per run: `~/.rowebotic-review/sessions/<ISO ts>_<owner>-<repo>_pr<N>_<r
 
 | Type          | Contents                                                                         |
 | ------------- | -------------------------------------------------------------------------------- |
-| `run_start`   | repo, PR, head SHA, run id                                                       |
+| `run_start`   | repo, PR, head SHA, run id, model, reasoning effort                              |
 | `agent_start` | role, instructions hash and length, cache key, session id, tool names            |
 | `request`     | the new input items only (first message, tool outputs, nudges)                    |
 | `response`    | output items, usage, hit rate, duration, gap, cache key, session id, request id   |

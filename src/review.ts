@@ -13,7 +13,7 @@ import { buildStubs, CodeMode, createPool, type HostFunction, mcpHostFunctions }
 import { type Concern, loadProject, type ProjectConfig } from './config.ts'
 import { fetchContext, GitHub, type Repo, type PullRequest, repoSlug, run } from './github.ts'
 import { closeServers, type McpServers, startServers } from './mcp.ts'
-import { createClient, type Item, UsageLimitError } from './model.ts'
+import { createClient, type Item, MODEL, REASONING_EFFORT, UsageLimitError } from './model.ts'
 import { Transcript } from './transcript.ts'
 
 export const CHILD_TIMEOUT_MS = 20 * 60 * 1000
@@ -449,7 +449,15 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
   let pool: Monty | undefined
   const codemodes: CodeMode[] = []
   const started = Date.now()
-  transcript.write('run_start', 'run', { repo: repoSlug(repo), pr: pr.number, headSha: pr.head.sha, runId, ...(options.prepared ? { batchId: options.prepared.batchId, batchSize: options.prepared.batchSize, poolCapacity: options.prepared.poolCapacity } : {}) })
+  transcript.write('run_start', 'run', {
+    repo: repoSlug(repo),
+    pr: pr.number,
+    headSha: pr.head.sha,
+    runId,
+    model: MODEL,
+    reasoningEffort: REASONING_EFFORT,
+    ...(options.prepared ? { batchId: options.prepared.batchId, batchSize: options.prepared.batchSize, poolCapacity: options.prepared.poolCapacity } : {}),
+  })
   try {
     if (!options.prepared) await prepare(project, runSignal, log)
     const headSha = pr.head.sha
