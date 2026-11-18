@@ -4,8 +4,8 @@ The `python` tool runs Python code in a sandbox and returns what the code printe
 
 The sandbox runs Monty, a subset of Python:
 
-- Only these standard library modules can be imported: `sys`, `typing`, `asyncio`, `math`, `json`, `re`, `unicodedata`, `datetime`, `time`, `random`, `os`, `pathlib`. Import them before use. There are no third-party libraries.
-- There is no filesystem, network, environment or clock access. Read code only through the functions below.
+- Supported standard library modules include `asyncio`, `collections`, `csv`, `datetime`, `decimal`, `fnmatch`, `itertools`, `json`, `math`, `os`, `pathlib`, `random`, `re`, `sys`, `time`, `tomllib`, `typing`, and `unicodedata`. Import modules before use. There are no third-party libraries.
+- There is no direct filesystem, network, or host environment access. Read code only through the functions below. `time.time()` returns the current Unix timestamp.
 - No class inheritance, `del`, `yield`, `import *`, or task APIs other than `asyncio.gather`.
 - Avoid `next(generator_expression)`: Monty raises an iterator error. Use a list comprehension and check whether it is empty before taking `[0]`, or use a loop with `break`.
 - State is kept between calls, like a REPL: variables and functions you define stay available.
