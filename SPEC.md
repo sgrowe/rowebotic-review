@@ -23,7 +23,7 @@ The repo comes from `gh repo view`. There is no dry run. The review event is alw
 
 Exit codes: 0 ok, 1 error or review not posted, 2 usage, 3 usage limit, 4 login needed, 130 stopped.
 
-Install: `npm run install-locally` (runs `npm install && npm link`). Node 24 runs the `.ts` files directly (type stripping), so there is no build step.
+Run `npm run install-locally` to install and link the tool. Node 24 runs the `.ts` files directly (type stripping), so there is no build step. Use npm 11.10.0 or newer to apply the three-day cooldown when resolving dependencies.
 
 ## Flow of one review
 
