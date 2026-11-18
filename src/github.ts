@@ -158,9 +158,13 @@ export class GitHub {
   }
 }
 
-/** A submitted (not pending) review exists on this head commit. */
-export function isReviewed(headSha: string, reviews: Review[]): boolean {
-  return reviews.some(review => review.state !== 'PENDING' && Boolean(review.submitted_at) && review.commit_id === headSha)
+export function isSubmittedRoweboticReview(review: Review): boolean {
+  return review.state !== 'PENDING' && Boolean(review.submitted_at)
+    && review.body?.trimStart().split('\n', 1)[0]?.trimEnd() === '**🤖 Rowebotic Review ✨**'
+}
+
+export function hasRoweboticReview(headSha: string, reviews: Review[]): boolean {
+  return reviews.some(review => review.commit_id === headSha && isSubmittedRoweboticReview(review))
 }
 
 export type PrContext = {

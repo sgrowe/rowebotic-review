@@ -192,9 +192,9 @@ Batch scheduling, in-process:
 
 - Search: the settings string + ` updated:>=<now − 5 days, ISO> sort:created-asc`, with `--state open --limit 1000`, recomputed every scan.
 - Skip a PR whose head commit is older than 5 days (logged once per head), before fetching its reviews.
-- Skip it if my submitted review exists for the head SHA. Fail it if my pending review exists.
+- Skip it if the watcher account has a submitted review for the head SHA whose body starts with the Rowebotic Review heading. Fail it if the account has a pending review.
 - Select up to ten eligible PRs, fetch and prepare once, run reviews concurrently, and await all reviews and cleanup before searching again. Verify submitted reviews against captured head SHAs; new commits arriving during review are allowed.
-- First reviews qualify immediately within the age restrictions. Previously reviewed PRs require an unreviewed head commit at least two minutes old (commit timestamp, not push time).
+- First Rowebotic reviews qualify immediately within the age restrictions. PRs previously reviewed by Rowebotic require an unreviewed head commit at least two minutes old (commit timestamp, not push time).
 - Three-minute cooldown after individual errors only. Sleep 90 seconds when nothing qualifies or a scan/fetch fails.
 - Account failures leave peers running. After the batch settles, `AuthError` stops the watcher; otherwise usage limits sleep until the latest required reset (+1 minute; 1 hour if unknown).
 - Ctrl-C aborts the active batch and the watcher. A second Ctrl-C exits at once.

@@ -3,7 +3,7 @@
 
 import { setTimeout as sleep } from 'node:timers/promises'
 import { AuthError } from './auth.ts'
-import { type GitHub, isReviewed, type Repo, type PullRequest } from './github.ts'
+import { type GitHub, hasRoweboticReview, isSubmittedRoweboticReview, type Repo, type PullRequest } from './github.ts'
 import { UsageLimitError } from './model.ts'
 
 export const INTERVAL_MS = 3 * 60 * 1000
@@ -66,11 +66,11 @@ export class Watcher {
           continue
         }
         const reviews = await github.reviewsBy(repo, number, login)
-        if (isReviewed(pr.head.sha, reviews)) continue
+        if (hasRoweboticReview(pr.head.sha, reviews)) continue
         if (reviews.some(review => review.state === 'PENDING')) {
           throw new Error('a pending review already exists; submit or discard it manually')
         }
-        const previouslyReviewed = reviews.some(review => review.state !== 'PENDING' && Boolean(review.submitted_at))
+        const previouslyReviewed = reviews.some(isSubmittedRoweboticReview)
         if (previouslyReviewed && committedAt > this.#now() - DEBOUNCE_MS) continue
         selected.push(pr)
         if (selected.length === MAX_BATCH_SIZE) break
@@ -92,10 +92,10 @@ export class Watcher {
         if (result.value.headSha !== pr.head.sha) throw new Error('review returned a different head than selected')
         const current = await github.pullRequest(repo, pr.number)
         const submitted = await github.reviewsBy(repo, pr.number, login)
-        if (!isReviewed(pr.head.sha, submitted)) {
-          throw new Error('no submitted review found for the reviewed head; see the output above')
+        if (!hasRoweboticReview(pr.head.sha, submitted)) {
+          throw new Error('no submitted Rowebotic review found for the reviewed head; see the output above')
         }
-        if (isReviewed(current.head.sha, submitted)) {
+        if (hasRoweboticReview(current.head.sha, submitted)) {
           log(`PR #${pr.number}: current head has been reviewed.`)
         } else {
           log(`PR #${pr.number}: new commits arrived; eligibility will be checked next batch.`)

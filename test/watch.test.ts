@@ -29,8 +29,8 @@ function fake(prs: Record<number, FakePr>, order: number[]) {
       return prs[number]!.reviews
     },
   }
-  const submit = (number: number) => {
-    prs[number]!.reviews.push({ id: 1, user: { login: 'me' }, state: 'COMMENTED', body: '', submitted_at: new Date(now).toISOString(), commit_id: prs[number]!.sha, html_url: '' })
+  const submit = (number: number, body = '**🤖 Rowebotic Review ✨**\n\nNo issues found.') => {
+    prs[number]!.reviews.push({ id: 1, user: { login: 'me' }, state: 'COMMENTED', body, submitted_at: new Date(now).toISOString(), commit_id: prs[number]!.sha, html_url: '' })
   }
   let onReview: (number: number) => Promise<void> | void = submit
   const watcher = new Watcher({
@@ -79,6 +79,19 @@ describe('Watcher', () => {
     assert.match(t.searches[0]!, /^label:x draft:false updated:>=/)
   })
 
+  it('re-reviews a new head with inline replies from the operator', async () => {
+    const prs = { 1: { sha: 'a1', committedAt: NOW - 180_000, reviews: [] as Review[] } }
+    const t = fake(prs, [1])
+    t.submit(1)
+    prs[1].sha = 'a2'
+    t.submit(1, '')
+    t.submit(1, '')
+
+    assert.equal(await t.watcher.reviewBatch(), true)
+    assert.deepEqual(t.reviewed, [1])
+    assert.equal(await t.watcher.reviewBatch(), false)
+  })
+
   it('skips heads older than 5 days before fetching reviews, logging once per head', async () => {
     const t = fake({ 1: { sha: 'old', committedAt: NOW - RECENT_MS - 1, reviews: [] } }, [1])
     assert.equal(await t.watcher.reviewBatch(), false)
@@ -95,7 +108,7 @@ describe('Watcher', () => {
     assert.deepEqual(t.reviewed, [2])
   })
 
-  it('cools down a failed review and one that posted nothing', async () => {
+  it('cools down a failed review and a head with only an unrelated review', async () => {
     const t = fake({ 1: { sha: 'a1', committedAt: recent, reviews: [] } }, [1])
     t.setOnReview(() => {
       throw new Error('model failed')
@@ -103,10 +116,10 @@ describe('Watcher', () => {
     assert.equal(await t.watcher.reviewBatch(), true)
     assert.equal(t.watcher.nextReviewAt.get(1), NOW + INTERVAL_MS)
     assert.equal(await t.watcher.reviewBatch(), false)
-    t.setOnReview(() => {})
+    t.setOnReview(number => t.submit(number, 'Manual review'))
     t.setNow(NOW + INTERVAL_MS + 1)
     assert.equal(await t.watcher.reviewBatch(), true)
-    assert.match(t.logs.at(-1)!, /no submitted review/)
+    assert.match(t.logs.at(-1)!, /no submitted Rowebotic review/)
   })
 
   it('accepts a review of the old head when new commits arrived during the run', async () => {
@@ -144,6 +157,8 @@ it('debounces only previously reviewed PRs and includes the two-minute boundary'
   const t = fake(prs, [1,2])
   t.submit(1)
   prs[1].sha = 'new'
+  t.submit(2, 'Manual review')
+  prs[2].sha = 'new-b'
   await t.watcher.reviewBatch()
   assert.deepEqual(t.reviewed, [2])
   t.setNow(NOW + 60_000)
