@@ -187,7 +187,7 @@ it('scales pool capacity up to sixty workers', () => {
   assert.equal(batchPoolCapacity(10), 60)
 })
 
-it('starts immediately then spaces overlapping PRs two seconds apart in selection order', async () => {
+it('starts immediately then spaces overlapping PRs one second apart in selection order', async () => {
   let now = 0
   const starts: number[] = []
   const times: number[] = []
@@ -208,7 +208,7 @@ it('starts immediately then spaces overlapping PRs two seconds apart in selectio
   releases.shift()!()
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(starts, [1, 2, 3])
-  assert.deepEqual(times, [0, 2000, 4000])
+  assert.deepEqual(times, [0, 1000, 2000])
   assert.deepEqual(delays, [PR_START_INTERVAL_MS, PR_START_INTERVAL_MS])
   finishFirst()
   assert.deepEqual((await batch).map(r => r.status), ['fulfilled', 'rejected', 'fulfilled'])

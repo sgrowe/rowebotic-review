@@ -348,7 +348,7 @@ export async function createReviewModel(): Promise<ReturnType<typeof modelCaller
   return modelCaller(createClient(tokens), tokens)
 }
 
-export const PR_START_INTERVAL_MS = 2000
+export const PR_START_INTERVAL_MS = 1000
 
 export function batchPoolCapacity(size: number): number {
   return Math.min(60, size * 9)
