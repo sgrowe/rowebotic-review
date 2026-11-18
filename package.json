@@ -17,12 +17,15 @@
     "install-locally": "npm install && npm link"
   },
   "dependencies": {
+    "@google-cloud/storage": "^9.0.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@pydantic/monty": "^1.6.0",
-    "openai": "^7.59.0"
+    "openai": "^7.59.0",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
     "oxlint": "^1.94.0",
     "typescript": "^7.0.2"
   }

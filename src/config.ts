@@ -2,6 +2,7 @@
 
 import { access, constants, readdir, readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
+import { idleSchedule } from './schedule.ts'
 
 export const PROJECT_DIR = '.rowebotic-review'
 
@@ -17,6 +18,7 @@ export type ProjectConfig = {
   root: string
   /** gh search qualifiers for `watch`. */
   search: string | undefined
+  idleDelay?: (now: number) => number
   concerns: Concern[]
   /** Doc name (file name without `.md`) → text. */
   docs: Map<string, string>
@@ -61,11 +63,10 @@ async function markdownFiles(dir: string): Promise<string[]> {
   }
 }
 
-export async function loadProject(root: string): Promise<ProjectConfig> {
-  const dir = join(root, PROJECT_DIR)
+export async function loadProject(root: string, dir = join(root, PROJECT_DIR)): Promise<ProjectConfig> {
   const settingsText = await readOptional(join(dir, 'settings.json'))
   if (settingsText === undefined) throw new Error(`Missing ${join(dir, 'settings.json')}; run from the repo root`)
-  const settings = JSON.parse(settingsText) as { search?: unknown }
+  const settings = JSON.parse(settingsText) as { search?: unknown; polling?: unknown }
   if (settings.search !== undefined && typeof settings.search !== 'string') throw new Error('settings.json: "search" must be a string')
 
   const concerns: Concern[] = []
@@ -95,6 +96,7 @@ export async function loadProject(root: string): Promise<ProjectConfig> {
   return {
     root,
     search: settings.search,
+    idleDelay: settings.polling === undefined ? undefined : idleSchedule(settings.polling),
     concerns,
     docs,
     instructions: ((await readOptional(join(dir, 'instructions.md'))) ?? '').trim(),

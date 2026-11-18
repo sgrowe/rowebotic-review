@@ -1,7 +1,6 @@
 // One review run: prepare the repo, fetch PR context, run the orchestrator,
 // which starts reviewers through the `review_batch` tool.
 
-import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -15,6 +14,7 @@ import { fetchContext, GitHub, type Repo, type PullRequest, repoSlug, run } from
 import { closeServers, type McpServers, startServers } from './mcp.ts'
 import { createClient, type Item, MODEL, REASONING_EFFORT, UsageLimitError } from './model.ts'
 import { Transcript } from './transcript.ts'
+import { runHook } from './hooks.ts'
 
 export const CHILD_TIMEOUT_MS = 20 * 60 * 1000
 export const ORCHESTRATOR_TIMEOUT_MS = 45 * 60 * 1000
@@ -169,6 +169,7 @@ export type ReviewOptions = {
   prNumber: number
   signal: AbortSignal
   print?: (line: string) => void
+  onTranscript?: (path: string, finished: boolean) => void
   prepared?: { project: ProjectConfig; repo: Repo; pr: PullRequest; servers: McpServers; pool: Monty; model: ReturnType<typeof modelCaller>; batchId: string; batchSize: number; poolCapacity: number }
 }
 
@@ -188,20 +189,24 @@ export async function startReviewResources(
   }
 }
 
-async function prepare(project: ProjectConfig, signal: AbortSignal, log: (text: string) => void): Promise<void> {
+async function prepare(project: ProjectConfig, signal: AbortSignal, log: (text: string) => void, strict = false): Promise<void> {
   log('jj git fetch')
-  await run('jj', ['git', 'fetch'], { cwd: project.root, signal })
+  if (strict) {
+    const code = await runHook('jj', ['git', 'fetch'], project.root, AbortSignal.any([signal, AbortSignal.timeout(5 * 60_000)]))
+    if (code !== 0) throw new Error(`jj git fetch exited with ${code ?? 'a signal'}`)
+  } else {
+    await run('jj', ['git', 'fetch'], { cwd: project.root, signal })
+  }
   if (!project.prepare) return
   log(`running ${project.prepare}`)
-  const code = await new Promise<number | null>((resolve, reject) => {
-    const child = spawn(project.prepare!, [], { cwd: project.root, stdio: ['ignore', 'inherit', 'inherit'], signal })
-    child.once('error', reject)
-    child.once('close', resolve)
-  }).catch(error => {
+  const code = await runHook(project.prepare, [], project.root, signal).catch(error => {
     if (signal.aborted) throw signal.reason ?? error
+    if (strict) throw error
     log(`warning: prepare failed to start: ${(error as Error).message}`)
     return 0
   })
+  signal.throwIfAborted()
+  if (strict && code !== 0) throw new Error(`prepare exited with ${code}`)
   if (code !== 0) log(`warning: prepare exited with ${code}; continuing (the DB schema may be stale)`)
 }
 
@@ -343,8 +348,8 @@ export async function prFrom(root: string, baseRef: string, headSha: string, sig
   return `fork_point(trunk() | ${headSha})`
 }
 
-export async function createReviewModel(): Promise<ReturnType<typeof modelCaller>> {
-  const tokens = await TokenStore.load()
+export async function createReviewModel(store?: TokenStore): Promise<ReturnType<typeof modelCaller>> {
+  const tokens = store ?? await TokenStore.load()
   return modelCaller(createClient(tokens), tokens)
 }
 
@@ -398,10 +403,14 @@ export async function reviewBatch(options: {
   signal: AbortSignal
   model: ReturnType<typeof modelCaller>
   print?: (line: string) => void
+  project?: ProjectConfig
+  strictPrepare?: boolean
+  onStage?: (stage: 'preparing' | 'preparation failed' | 'reviewing') => void
+  onTranscript?: (path: string, finished: boolean) => void
 }): Promise<PromiseSettledResult<ReviewOutcome>[]> {
   if (!options.prs.length) return []
   const print = options.print ?? console.log
-  const project = await loadProject(options.root)
+  const project = options.project ?? await loadProject(options.root)
   const github = new GitHub({ cwd: options.root, signal: options.signal })
   const repo = await github.repo()
   const batchId = randomUUID().slice(0, 8)
@@ -411,11 +420,24 @@ export async function reviewBatch(options: {
   print(`Batch ${batchId}: ${batchSize} PRs, ${poolCapacity} workers, ${PR_START_INTERVAL_MS / 1000}s between PR starts`)
   const results = await runBatch(options.prs, {
     signal: options.signal,
-    prepare: () => prepare(project, options.signal, print),
-    start: () => startReviewResources(() => startServers(project.root), () => createPool(poolCapacity)),
+    prepare: async () => {
+      options.onStage?.('preparing')
+      try {
+        await prepare(project, options.signal, print, options.strictPrepare)
+      } catch (error) {
+        options.onStage?.('preparation failed')
+        throw error
+      }
+    },
+    start: async () => {
+      const resources = await startReviewResources(() => startServers(project.root), () => createPool(poolCapacity))
+      options.onStage?.('reviewing')
+      return resources
+    },
     review: (pr, resources) => reviewPr({
       root: options.root, prNumber: pr.number, signal: options.signal,
       print: line => print(`[PR #${pr.number}] ${line}`),
+      onTranscript: options.onTranscript,
       prepared: { project, repo, pr, ...resources, model: options.model, batchId, batchSize, poolCapacity },
     }),
     close: async resources => {
@@ -458,6 +480,7 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
     reasoningEffort: REASONING_EFFORT,
     ...(options.prepared ? { batchId: options.prepared.batchId, batchSize: options.prepared.batchSize, poolCapacity: options.prepared.poolCapacity } : {}),
   })
+  options.onTranscript?.(transcript.path, false)
   try {
     if (!options.prepared) await prepare(project, runSignal, log)
     const headSha = pr.head.sha
@@ -576,6 +599,7 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
     print(`transcript: ${transcript.path}`)
     throw error
   } finally {
+    options.onTranscript?.(transcript.path, true)
     await Promise.all(codemodes.map(codemode => codemode.close()))
     if (!options.prepared) {
       await pool?.close().catch(() => {})

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// rowebotic-review login | review <pr> | watch
+// rowebotic-review login | review <pr> | watch | serve
 
 import { AuthError, login } from './auth.ts'
 import { loadProject } from './config.ts'
@@ -12,6 +12,7 @@ const usage = `usage:
   rowebotic-review login          sign in with your ChatGPT account (browser)
   rowebotic-review review <pr>    review one PR of the current repo and post the review
   rowebotic-review watch          review matching PRs in batches of up to ten
+  rowebotic-review serve          run the watcher and HTTP dashboard
 
 Run review and watch from the repo root, which must contain .rowebotic-review/.`
 
@@ -35,6 +36,15 @@ async function main(argv: string[], signal: AbortSignal): Promise<number> {
       const outcome = await reviewPr({ root, prNumber: number, signal })
       return outcome.result.reviewPosted ? 0 : 1
     }
+    case 'serve': {
+      if (rest.length) {
+        console.error(usage)
+        return 2
+      }
+      const { serve } = await import('./serve.ts')
+      await serve(log, signal)
+      return 0
+    }
     case 'watch': {
       if (rest.length) {
         console.error(usage)
@@ -54,6 +64,7 @@ async function main(argv: string[], signal: AbortSignal): Promise<number> {
         reviewBatch: (prs, reviewSignal) => reviewBatch({ root, prs, signal: reviewSignal, model }),
         log,
         signal,
+        idleDelay: project.idleDelay,
       })
       await watcher.run()
       return signal.aborted ? 130 : 0

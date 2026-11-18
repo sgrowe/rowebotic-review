@@ -6,7 +6,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
@@ -22,7 +22,7 @@ const JWT_CLAIM = 'https://api.openai.com/auth'
 const REFRESH_MARGIN_MS = 5 * 60 * 1000
 
 export const homeDir = join(homedir(), '.rowebotic-review')
-export const authPath = join(homeDir, 'auth.json')
+export const authPath = resolve(process.env.ROWEBOTIC_AUTH_FILE ?? join(homeDir, 'auth.json'))
 
 export type Credentials = {
   access: string
@@ -55,9 +55,9 @@ async function readTokenResponse(response: Response, operation: string): Promise
   const text = await response.text()
   if (!response.ok) {
     if (/invalid_grant|refresh_token_(expired|reused|invalidated)/.test(text)) {
-      throw new AuthError(`Token ${operation} was rejected; run \`rowebotic-review login\`. ${text}`)
+      throw new AuthError(`Token ${operation} was rejected; run \`rowebotic-review login\`.`)
     }
-    throw new Error(`Token ${operation} failed (${response.status}): ${text}`)
+    throw new Error(`Token ${operation} failed (HTTP ${response.status})`)
   }
   const json = JSON.parse(text)
   if (!json?.access_token || !json.refresh_token || typeof json.expires_in !== 'number') {
@@ -89,7 +89,7 @@ export async function saveCredentials(creds: Credentials, path = authPath): Prom
   await rename(temp, path)
 }
 
-export async function refreshCredentials(refreshToken: string): Promise<Credentials> {
+export async function refreshCredentials(refreshToken: string, signal?: AbortSignal): Promise<Credentials> {
   const response = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -98,9 +98,14 @@ export async function refreshCredentials(refreshToken: string): Promise<Credenti
       refresh_token: refreshToken,
       client_id: CLIENT_ID,
     }),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.any([AbortSignal.timeout(60_000), ...(signal ? [signal] : [])]),
   })
   return readTokenResponse(response, 'refresh')
+}
+
+export type CredentialStorage = {
+  load: () => Promise<Credentials | undefined>
+  save: (creds: Credentials) => Promise<void>
 }
 
 /**
@@ -111,12 +116,18 @@ export async function refreshCredentials(refreshToken: string): Promise<Credenti
  */
 export class TokenStore {
   #creds: Credentials
+  #pending: Credentials | undefined
   #refreshing: Promise<Credentials> | undefined
-  readonly path: string
+  readonly #storage: CredentialStorage
+  readonly #signal: AbortSignal | undefined
 
-  constructor(creds: Credentials, path = authPath) {
+  constructor(creds: Credentials, storage: string | CredentialStorage = authPath, signal?: AbortSignal) {
     this.#creds = creds
-    this.path = path
+    this.#signal = signal
+    this.#storage = typeof storage === 'string' ? {
+      load: () => loadCredentials(storage).catch(() => undefined),
+      save: value => saveCredentials(value, storage),
+    } : storage
   }
 
   static async load(path = authPath): Promise<TokenStore> {
@@ -129,7 +140,7 @@ export class TokenStore {
 
   /** Access token, refreshed first if it expires within 5 minutes. */
   async accessToken(): Promise<string> {
-    if (this.#creds.expires - Date.now() < REFRESH_MARGIN_MS) await this.refresh()
+    if (this.#pending || this.#creds.expires - Date.now() < REFRESH_MARGIN_MS) await this.refresh()
     return this.#creds.access
   }
 
@@ -137,21 +148,29 @@ export class TokenStore {
   refresh(): Promise<Credentials> {
     this.#refreshing ??= (async () => {
       try {
-        // Another process (a second run) may have refreshed already.
-        const onDisk = await loadCredentials(this.path).catch(() => undefined)
-        if (onDisk && onDisk.refresh !== this.#creds.refresh && onDisk.expires - Date.now() > REFRESH_MARGIN_MS) {
-          this.#creds = onDisk
-          return onDisk
+        this.#signal?.throwIfAborted()
+        if (this.#pending) return await this.#persistRefresh()
+        // Another process may have stored a refreshed token.
+        const stored = await this.#storage.load()
+        if (stored && stored.refresh !== this.#creds.refresh && stored.expires - Date.now() > REFRESH_MARGIN_MS) {
+          this.#creds = stored
+          return stored
         }
-        const creds = await refreshCredentials(this.#creds.refresh)
-        await saveCredentials(creds, this.path)
-        this.#creds = creds
-        return creds
+        this.#pending = await refreshCredentials(this.#creds.refresh, this.#signal)
+        return await this.#persistRefresh()
       } finally {
         this.#refreshing = undefined
       }
     })()
     return this.#refreshing
+  }
+
+  async #persistRefresh(): Promise<Credentials> {
+    const refreshed = this.#pending!
+    await this.#storage.save(refreshed)
+    this.#creds = refreshed
+    this.#pending = undefined
+    return refreshed
   }
 }
 

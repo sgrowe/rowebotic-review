@@ -102,3 +102,33 @@ describe('startCallbackServer', () => {
     }
   })
 })
+
+describe('TokenStore with durable storage', () => {
+  it('retries a failed write after rotation without exchanging the old token again', async context => {
+    const { TokenStore } = await import('../src/auth.ts')
+    let credentials = { access: 'expired', refresh: 'old', expires: 0, accountId: 'account' }
+    let writes = 0
+    const storage = {
+      load: async () => credentials,
+      save: async (value: typeof credentials) => {
+        if (++writes === 1) throw new Error('temporarily unable to save')
+        credentials = value
+      },
+    }
+    const claims = Buffer.from(JSON.stringify({
+      'https://api.openai.com/auth': { chatgpt_account_id: credentials.accountId },
+    })).toString('base64url')
+    const access = `header.${claims}.signature`
+    const request = context.mock.method(globalThis, 'fetch', async () => Response.json({
+      access_token: access,
+      refresh_token: 'new',
+      expires_in: 3600,
+    }))
+    const tokens = new TokenStore(credentials, storage)
+    await assert.rejects(tokens.accessToken(), /temporarily unable to save/)
+    assert.deepEqual(await Promise.all([tokens.accessToken(), tokens.accessToken()]), [access, access])
+    assert.equal(credentials.refresh, 'new')
+    assert.equal(await new TokenStore(await storage.load(), storage).accessToken(), access)
+    assert.equal(request.mock.callCount(), 1)
+  })
+})

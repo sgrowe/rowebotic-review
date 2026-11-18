@@ -25,6 +25,8 @@ export type WatchDeps = {
   reviewBatch: (prs: PullRequest[], signal: AbortSignal) => Promise<PromiseSettledResult<{ headSha: string }>[]>
   log: (text: string) => void
   signal: AbortSignal
+  idleDelay?: (now: number) => number
+  onStatus?: (status: { phase: 'polling' | 'idle' | 'quota wait' | 'retrying'; at: number; nextPollAt?: number }) => void
   now?: () => number
   sleep?: (ms: number, signal: AbortSignal) => Promise<unknown>
 }
@@ -119,24 +121,34 @@ export class Watcher {
   }
 
   async run(): Promise<void> {
-    const { log, signal } = this.#deps
+    const { log, signal, onStatus } = this.#deps
     log(`Watching ${this.#deps.repo.owner}/${this.#deps.repo.name} as ${this.#deps.login}: ${this.#deps.search}`)
     while (!signal.aborted) {
+      const pollStarted = this.#now()
+      onStatus?.({ phase: 'polling', at: pollStarted })
+      let phase: 'idle' | 'retrying' = 'idle'
+      let message = 'No PRs ready.'
       try {
         if (await this.reviewBatch()) continue
-        log('No PRs ready. Checking again in 90 seconds.')
       } catch (error) {
         if (signal.aborted) return
         if (error instanceof AuthError) throw error
         if (error instanceof UsageLimitError) {
           const wait = error.resetsAt ? Math.max(0, error.resetsAt - this.#now()) + 60_000 : UNKNOWN_RESET_WAIT_MS
-          log(`Usage limit reached: ${error.message}. Sleeping until ${new Date(this.#now() + wait).toLocaleString()}.`)
+          const nextPollAt = this.#now() + wait
+          onStatus?.({ phase: 'quota wait', at: this.#now(), nextPollAt })
+          log(`Usage limit reached: ${error.message}. Sleeping until ${new Date(nextPollAt).toLocaleString()}.`)
           await this.#sleep(wait, signal).catch(() => {})
           continue
         }
-        log(`Batch check failed: ${error instanceof Error ? error.message : String(error)}. Retrying in 90 seconds.`)
+        phase = 'retrying'
+        message = `Batch check failed: ${error instanceof Error ? error.message : String(error)}.`
       }
-      await this.#sleep(IDLE_MS, signal).catch(() => {})
+      const now = this.#now()
+      const wait = this.#deps.idleDelay?.(now) ?? IDLE_MS
+      onStatus?.({ phase, at: now, nextPollAt: now + wait })
+      log(`${message} Checking again in ${Math.ceil(wait / 1000)} seconds.`)
+      await this.#sleep(wait, signal).catch(() => {})
     }
   }
 }
