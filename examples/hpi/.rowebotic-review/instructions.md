@@ -4,10 +4,6 @@ This is the Humaans monorepo.
 
 Weigh how likely users are to encounter an issue against the severity of its consequences. Skip low-impact issues that require an unusual sequence, but keep rare failures when the consequences are serious, such as data loss, unauthorized access, or incorrect execution of a workflow.
 
-On Rowebotic's first review of a PR, surface more verified, actionable findings. Include minor regressions the author can reasonably address in the PR, even when they are safe to ship. Apply the likelihood and severity guidance on every review.
-
-For the orchestrator, the first-review guidance applies when no submitted review of this PR begins with the `**🤖 Rowebotic Review ✨**` heading. Check submitted reviews across all revisions of the PR. Use the ordinary reporting threshold on subsequent reviews.
-
 ## Guidance files
 
 - For each file you review, read every `AGENTS.md` in the directories between the repo root and that file. Skip the root `AGENTS.md`. For Athena paths (`app/athena-*`, `packages/athena-shared`), also read `ATHENA.md` at the repo root.

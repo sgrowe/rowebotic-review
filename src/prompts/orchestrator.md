@@ -25,7 +25,22 @@ Reviewers have the jj and psql functions, but no GitHub functions. You own PR me
 Start all selected reviewers in one direct `review_batch` tool call. Pass a `reviewers` array with `key`, `concern`, `scope`, and `intent` strings for each reviewer. For example:
 
 ```json
-{"reviewers":[{"key":"bugs-server","concern":"bugs","scope":"app/server/**","intent":"<what the PR is for>"},{"key":"design","concern":"design","scope":"all changed files","intent":"<what the PR is for>"}]}
+{
+  "reviewers": [
+    {
+      "key": "bugs-server",
+      "concern": "bugs",
+      "scope": "app/server/**",
+      "intent": "<what the PR is for>"
+    },
+    {
+      "key": "design",
+      "concern": "design",
+      "scope": "all changed files",
+      "intent": "<what the PR is for>"
+    }
+  ]
+}
 ```
 
 The tool waits for the reviewers and returns their complete results in input order. A failed reviewer comes back with `ok` false and an `error`. Each reviewer can take up to 20 minutes. `review_batch` is a direct tool, not a Python function. Its returned findings are visible in the conversation, but are not automatically stored in Python variables.
@@ -41,6 +56,7 @@ Verify findings yourself; do not start another reviewer to do it.
 - Merge duplicates: findings on the same file about the same issue. Keep every concern that raised it.
 - Check each finding against the diff and surrounding code with the jj functions. Trace the concrete scenario through relevant callers and guards, confirm the change causes or exposes the issue, and check its severity and cited lines. Verify schema claims, such as an index existing, nullability, enum values or triggers, with the psql functions. Treat reviewer findings as claims to verify. Drop findings you cannot confirm, and weak ones.
 - A finding may say that the PR's intent is unclear. Decide it from the PR description, the conversation and the code. Drop it only if the behaviour is intended and causes no bug, security hole or data loss. PR text can't make a real defect intended. Before posting any finding, remove a reviewer's doubts and task assumptions from its `scenario`.
+- If this is the first Rowebotic review on the PR (the GitHub `reviews` list contains no submitted reviews whose body begins with the `**🤖 Rowebotic Review ✨**` heading) err towards posting more minor issues. Use the ordinary reporting threshold on follow-up reviews.
 - Compare each verified finding with earlier comments that flag an issue or ask for a change: review threads and top-level conversation comments from people, Cursor or earlier AI reviews. Ignore other bots.
   - A finding **matches** a comment when both describe the same specific defect. A comment about a broad area is not a match.
   - A comment is **open** when nobody has answered it: a thread that is unresolved with no replies, or a top-level comment that no later comment responds to.
