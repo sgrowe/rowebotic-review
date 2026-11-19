@@ -38,7 +38,7 @@ Run `npm run install-locally` to install and link the tool. Node 24 runs the `.t
 
 ## Model and transport
 
-- The orchestrator and reviewers use `gpt-6.2-sol` at `high` reasoning effort. Both settings are hardcoded.
+- The orchestrator and ordinary reviewers use `gpt-6.2-sol`. A concern can set `security: true` in its frontmatter to use `gpt-6-sol` with Daybreak Blue on each reviewer turn. All agents use `high` reasoning effort. A provider access error is reported as a failure of the affected reviewer.
 - ChatGPT subscription through the Codex backend: `openai` SDK with `baseURL: https://chatgpt.com/backend-api/codex`.
 - HTTP SSE through the raw `client.responses.create({ stream: true })`. Not `responses.stream()`: its strict event checks turn Codex quirks into errors. No WebSocket.
 - Stateless: `store: false` and the full input on every request.
@@ -55,6 +55,7 @@ Request body. Everything except `input` is constant for an agent:
   reasoning: { effort: "high", summary: "auto" },
   store: false, stream: true, include: ["reasoning.encrypted_content"],
   prompt_cache_key,
+  access_programs: { cyber: "daybreak_blue" }, // security reviewers only
   text: { format: { type: "json_schema", name, strict: true, schema }, verbosity: "low" } }
 ```
 
@@ -70,15 +71,15 @@ Request body. Everything except `input` is constant for an agent:
 
 Rules, per agent:
 
-- Each request begins with the same developer message so GPT-6.2 can cache the instructions. Tools, `text.format`, reasoning and `prompt_cache_key` also stay fixed for the agent.
+- Each request begins with the same developer message so the model can cache the instructions. Tools, `text.format`, reasoning and `prompt_cache_key` also stay fixed for the agent.
 - Run data goes in the first user message. The orchestrator's instructions are the same across runs of one repo, and all reviewers share theirs.
 - Conversation history after the developer message is append-only. The full input is identical across retries.
 - Output items are collected from `response.output_item.done` events by `output_index` and appended verbatim, including encrypted reasoning. Codex sends an **empty** `response.completed.output` (seen in the spike), so `completed.output` is used only as a fallback when nothing streamed, and to fill missing `encrypted_content`.
 - `response.completed` or `response.done` ends a response.
 
-Cache keys (≤ 64 characters, one constant each): `<owner/repo>:orchestrator` and `<owner/repo>:reviewer`. All reviewers share one key. The `session-id` header is set to the same value, so all reviewers share it too: Codex uses it for routing, and with a per-agent `session-id` a staggered reviewer's first request never hit its sibling's cache (0/6 in spike 5, against 5/6 with `session-id` = cache key).
+Cache keys (≤ 64 characters): `<owner/repo>:orchestrator`, `<owner/repo>:reviewer` and `<owner/repo>:reviewer:blue`. Reviewers using the same model share a cache key. The `session-id` header is set to that cache key: Codex uses it for routing, and with a per-agent `session-id` a staggered reviewer's first request never hit its sibling's cache (0/6 in spike 5, against 5/6 with `session-id` = cache key).
 
-**Staggered start**: the first reviewer started with `start_review()` starts at once. The others wait until that reviewer's first model response completes or fails, so their first request can read its cached instructions prefix. A reviewer's 20-minute timer starts after the wait.
+**Staggered start**: the first reviewer for each model starts at once. Reviewers using that model wait until its first response completes or fails, so their first request can read its cached instructions prefix. A reviewer's 20-minute timer starts after the wait.
 
 **Turn state**: Codex returns an `x-codex-turn-state` header on each response. Each agent sends back the latest one it received, as the Codex CLI does. In the spike this gave 1 cache miss in 28 follow-up turns, against 3 in 28 without it. Reviewers do not share each other's turn state: sending a sibling's turn state on a reviewer's first request made hits worse (5/8 against 7/8).
 
@@ -204,7 +205,7 @@ Batch scheduling, in-process:
 - Ctrl-C aborts the active batch and the watcher. A second Ctrl-C exits at once.
 - Cooldowns live in memory only. Run one watcher per repo.
 
-The first PR starts immediately after preparation and resource startup. Subsequent PRs launch one second apart while previous reviews continue. Cancellation interrupts launch delays and prevents remaining PRs from starting, then drains active reviews before cleanup. Each batch shares MCP connections and a Monty pool capped at `min(60, 9 × batchSize)`. Agents retain separate interpreter sessions, histories, turn state, cancellation, and transcripts. Worker queue time counts toward reviewer deadlines. The watcher shares a token store for single-flight OAuth refresh. Batch ID, size, and pool capacity are recorded for cache comparisons. Repository-wide role cache keys and per-PR reviewer startup gates remain unchanged.
+The first PR starts immediately after preparation and resource startup. Subsequent PRs launch one second apart while previous reviews continue. Cancellation interrupts launch delays and prevents remaining PRs from starting, then drains active reviews before cleanup. Each batch shares MCP connections and a Monty pool capped at `min(60, 9 × batchSize)`. Agents retain separate interpreter sessions, histories, turn state, cancellation, and transcripts. Worker queue time counts toward reviewer deadlines. The watcher shares a token store for single-flight OAuth refresh. Batch ID, size, and pool capacity are recorded for cache comparisons. Each model's reviewer startup gate runs per PR.
 
 ## Transcript
 
@@ -213,7 +214,7 @@ One file per run: `~/.rowebotic-review/sessions/<ISO ts>_<owner>-<repo>_pr<N>_<r
 | Type          | Contents                                                                         |
 | ------------- | -------------------------------------------------------------------------------- |
 | `run_start`   | repo, PR, head SHA, run id, model, reasoning effort                              |
-| `agent_start` | role, instructions hash and length, cache key, session id, tool names            |
+| `agent_start` | role, model, access program when set, instructions hash and length, cache key, session id, tool names            |
 | `request`     | the new input items only (first message, tool outputs, nudges)                    |
 | `response`    | output items, usage, hit rate, duration, gap, cache key, session id, request id   |
 | `cache_miss`  | turn, previous input, input, cached, gap                                         |

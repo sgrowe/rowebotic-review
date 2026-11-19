@@ -85,12 +85,12 @@ const request: AgentRequest = {
   input: [{ role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
 }
 
-async function run(responders: Responder[], extra: { signal?: AbortSignal; idleMs?: number; tokens?: FakeTokens } = {}) {
+async function run(responders: Responder[], extra: { signal?: AbortSignal; idleMs?: number; tokens?: FakeTokens; security?: boolean } = {}) {
   const tokens = extra.tokens ?? new FakeTokens()
   const fake = fakeFetch(responders)
   const client = createClient(tokens, fake.fetch)
   const retries: { kind: string; delayMs: number; error: string }[] = []
-  const promise = callModel(client, request, {
+  const promise = callModel(client, { ...request, security: extra.security }, {
     signal: extra.signal ?? new AbortController().signal,
     tokens,
     backoffMs: [1, 1, 1, 1, 1],
@@ -300,6 +300,28 @@ describe('callModel', () => {
     const bad = () => new Response(JSON.stringify({ error: { type: 'invalid_request_error', message: 'bad' } }), { status: 400 })
     const { promise, retries } = await run([bad, ok])
     await assert.rejects(promise, FatalModelError)
+    assert.equal(retries.length, 0)
+  })
+
+  it('fails a rejected Daybreak program without retry or downgrade', async () => {
+    const denied = () => new Response(sse([{
+      type: 'error',
+      code: 'invalid_access_program',
+      message: 'Daybreak Blue access is unavailable',
+    }]), { headers: sseHeaders })
+    const { promise, retries, fake } = await run([denied, ok], { security: true })
+    await assert.rejects(promise, { name: 'FatalModelError', message: /Daybreak Blue access is unavailable/ })
+    assert.equal(retries.length, 0)
+    assert.equal(fake.bodies.length, 1)
+    assert.deepEqual(JSON.parse(fake.bodies[0]!).access_programs, { cyber: 'daybreak_blue' })
+  })
+
+  it('rejects an explicit mismatch in the reported access program', async () => {
+    const standard = () => new Response(sse([{
+      ...completed, response: { ...completed.response, access_programs: { cyber: 'standard' } },
+    }]), { headers: sseHeaders })
+    const { promise, retries } = await run([standard], { security: true })
+    await assert.rejects(promise, { name: 'FatalModelError', message: /Expected Daybreak Blue/ })
     assert.equal(retries.length, 0)
   })
 

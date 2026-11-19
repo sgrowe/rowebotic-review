@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import type OpenAI from 'openai'
 import type { TokenStore } from './auth.ts'
 import type { CodeMode } from './codemode.ts'
-import { callModel, type AgentRequest, type Item, type ModelResponse } from './model.ts'
+import { callModel, modelSettings, type AgentRequest, type Item, type ModelResponse } from './model.ts'
 import type { AgentRole, Transcript } from './transcript.ts'
 
 export const PYTHON_TOOL: Item = {
@@ -26,6 +26,7 @@ export const NUDGE = 'Finish any checks you have not done, then reply with the f
 export type AgentSpec = {
   id: string
   role: AgentRole
+  security?: boolean
   instructions: string
   promptCacheKey: string
   /** `text.format` json_schema. */
@@ -99,9 +100,12 @@ export async function runAgent(spec: AgentSpec, deps: AgentDeps): Promise<unknow
     spec.onFirstResponse?.()
   }
 
+  const settings = modelSettings(spec.security)
+  if (settings.access_programs) transcript.log(spec.id, `using ${settings.model} with Daybreak Blue`)
   transcript.addAgent(spec.id, spec.role)
   transcript.write('agent_start', spec.id, {
     role: spec.role,
+    ...settings,
     instructionsHash: instructionsHash(spec.instructions),
     instructionsChars: spec.instructions.length,
     promptCacheKey: spec.promptCacheKey,
@@ -119,6 +123,7 @@ export async function runAgent(spec: AgentSpec, deps: AgentDeps): Promise<unknow
         response = await deps.model(
           {
             instructions: spec.instructions,
+            security: spec.security,
             tools,
             textFormat: spec.textFormat,
             promptCacheKey: spec.promptCacheKey,

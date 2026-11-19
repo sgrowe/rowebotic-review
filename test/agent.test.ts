@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import { AgentOutputError, type ModelCaller, NUDGE, runAgent } from '../src/agent.ts'
-import type { AgentRequest, Item, ModelResponse } from '../src/model.ts'
+import { requestBody, type AgentRequest, type Item, type ModelResponse } from '../src/model.ts'
 import { Transcript } from '../src/transcript.ts'
 
 function response(output: Item[], input: number, cached: number): ModelResponse {
@@ -85,6 +85,21 @@ describe('runAgent', () => {
     for (const type of ['agent_start', 'request', 'response', 'code_exec', 'cache_miss', 'agent_end']) assert.ok(types.includes(type), type)
     const totals = t.transcript.totals('bugs')
     assert.deepEqual([totals.turns, totals.input, totals.first.input, totals.later.input], [3, 6000, 1000, 5000])
+  })
+
+  it('uses the security model and access program on every turn', async () => {
+    const t = await setup([[call('c1', 'x = 1')], [message('{"findings":[]}')]])
+    await runAgent({ ...t.spec, security: true }, { transcript: t.transcript, model: t.model })
+    assert.equal(t.requests.length, 2)
+    for (const { req } of t.requests) {
+      assert.equal(requestBody(req).model, 'gpt-6-sol')
+      assert.deepEqual(requestBody(req).access_programs, { cyber: 'daybreak_blue' })
+    }
+    const firstRecord = JSON.parse((await readFile(t.path, 'utf8')).split('\n')[0]!)
+    assert.equal(firstRecord.model, 'gpt-6-sol')
+    assert.deepEqual(firstRecord.access_programs, { cyber: 'daybreak_blue' })
+    assert.equal(requestBody({ ...t.requests[0]!.req, security: false }).model, 'gpt-6.2-sol')
+    assert.equal('access_programs' in requestBody({ ...t.requests[0]!.req, security: false }), false)
   })
 
   it('nudges once on an empty answer, then fails', async () => {

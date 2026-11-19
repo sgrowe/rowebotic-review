@@ -305,14 +305,14 @@ export type ReviewFunctionOptions = {
 /**
  * Executes one reviewer for direct delegation, returning failures as results. The first call
  * starts at once; later calls wait until that reviewer's first model response
- * completes or fails, so they can read its cached instructions prefix. Each
+ * for the same model completes or fails, so they can read its cached instructions prefix. Each
  * reviewer's timeout starts after that wait.
  */
 export type ReviewerRequest = { key: string; concern: string; scope: string; intent: string }
 
 export function createReviewRunner(options: ReviewFunctionOptions): (args: ReviewerRequest, signal: AbortSignal) => Promise<ReviewResult> {
   const usedIds = new Set<string>(['orchestrator', 'run'])
-  let gate: Promise<void> | undefined
+  const gates = new Map<boolean, Promise<void>>()
   return async (args, orchestratorSignal): Promise<ReviewResult> => {
     const key = String(args.key ?? 'reviewer')
     const concern = options.concerns.find(c => c.name === args.concern)
@@ -322,11 +322,13 @@ export function createReviewRunner(options: ReviewFunctionOptions): (args: Revie
     }
     const id = uniqueKey(usedIds, key)
 
+    const security = concern.security === true
+    const gate = gates.get(security)
     let openGate: (() => void) | undefined
     if (!gate) {
-      gate = new Promise(resolve => {
+      gates.set(security, new Promise(resolve => {
         openGate = resolve
-      })
+      }))
     } else {
       try {
         await abortableWait(gate, orchestratorSignal)
@@ -679,8 +681,9 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
             {
               id,
               role: 'reviewer',
+              security: concern.security,
               instructions: reviewerInstructions,
-              promptCacheKey: `${keyBase}:reviewer`,
+              promptCacheKey: concern.security ? `${keyBase}:reviewer:blue` : `${keyBase}:reviewer`,
               textFormat: reviewerFormat,
               firstMessage,
               codemode,

@@ -10,6 +10,7 @@ export type Concern = {
   name: string
   description: string
   when: string
+  security?: boolean
   /** Instructions for the reviewer, sent in its first message. */
   body: string
 }
@@ -75,7 +76,10 @@ export async function loadProject(root: string, dir = join(root, PROJECT_DIR)): 
     if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error(`Concern file name must be [A-Za-z0-9_-]: ${file}`)
     const { data, body } = parseFrontmatter(await readFile(join(dir, 'concerns', file), 'utf8'))
     if (!data.description || !data.when) throw new Error(`concerns/${file}: frontmatter needs "description" and "when"`)
-    concerns.push({ name, description: data.description, when: data.when, body: body.trim() })
+    if (data.security !== undefined && data.security !== 'true' && data.security !== 'false') {
+      throw new Error(`concerns/${file}: frontmatter "security" must be true or false`)
+    }
+    concerns.push({ name, description: data.description, when: data.when, security: data.security === 'true', body: body.trim() })
   }
   if (concerns.length === 0) throw new Error(`No concerns in ${join(dir, 'concerns')}`)
 

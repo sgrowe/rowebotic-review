@@ -4,7 +4,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import type { Monty } from '@pydantic/monty'
 import type { Concern } from '../src/config.ts'
 import type { McpServer, McpServers } from '../src/mcp.ts'
-import { UsageLimitError } from '../src/model.ts'
+import { FatalModelError, UsageLimitError } from '../src/model.ts'
 import { batchPoolCapacity, PR_START_INTERVAL_MS, type ChildRun, createReviewFunctions, createReviewRunner, type Finding, type ReviewResult, type ReviewUpdate, runBatch, startReviewResources, TYPE_DEFS, transcriptFile } from '../src/review.ts'
 import { CodeMode, createPool, type HostFunction } from '../src/codemode.ts'
 
@@ -93,6 +93,32 @@ describe('createReviewRunner', () => {
     controller.abort(new Error('run stopped'))
     const b = (await waiting) as { ok: boolean; error: string }
     assert.equal(b.ok, false)
+  })
+
+  it('runs security reviewers in their own cache group and isolates an access failure', async () => {
+    const events: string[] = []
+    let stop: unknown
+    const run = createReviewRunner({
+      concerns: [...concerns, { name: 'security', description: 's', when: 'always', body: '', security: true }],
+      timeoutMs: 1000,
+      log: () => {},
+      stopRun: error => { stop = error },
+      runChild: async child => {
+        events.push(child.id)
+        if (child.concern.security) {
+          await sleep(10)
+          throw new FatalModelError('Daybreak Blue access is unavailable')
+        }
+        return [finding]
+      },
+    })
+    const signal = new AbortController().signal
+    const [security, ordinary] = await Promise.all([run(args('security', 'security'), signal), run(args('bugs'), signal)])
+    assert.deepEqual(events, ['security', 'bugs'])
+    assert.equal(security.ok, false)
+    assert.match(security.error!, /Daybreak Blue access is unavailable/)
+    assert.equal(ordinary.ok, true)
+    assert.equal(stop, undefined)
   })
 
   it('stops the run on a usage limit', async () => {

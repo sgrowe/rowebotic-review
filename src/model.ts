@@ -18,6 +18,7 @@ export type Usage = { input: number; cached: number; output: number; reasoning: 
 
 export type AgentRequest = {
   instructions: string
+  security?: boolean
   tools: Item[]
   textFormat: Item
   promptCacheKey: string
@@ -37,10 +38,16 @@ export type ModelResponse = {
   status: string | undefined
 }
 
+export function modelSettings(security = false) {
+  return security
+    ? { model: 'gpt-6-sol', access_programs: { cyber: 'daybreak_blue' } }
+    : { model: MODEL }
+}
+
 export function requestBody(req: AgentRequest): Item {
   return {
-    model: MODEL,
-    // GPT-6.2 caches reusable instructions when they start the input prefix.
+    ...modelSettings(req.security),
+    // The model caches reusable instructions when they start the input prefix.
     input: [
       { role: 'developer', content: [{ type: 'input_text', text: req.instructions }] },
       ...req.input,
@@ -98,7 +105,10 @@ export class UsageLimitError extends Error {
 }
 
 const USAGE_LIMIT_CODES = new Set(['usage_limit_reached', 'usage_not_included', 'rate_limit_exceeded'])
-const FATAL_CODES = new Set(['context_length_exceeded', 'invalid_request_error', 'invalid_prompt'])
+const FATAL_CODES = new Set([
+  'context_length_exceeded', 'invalid_request_error', 'invalid_prompt',
+  'invalid_access_program', 'model_not_found',
+])
 
 /** Finds a usage limit in an error body/event: `{code|type, resets_at}` at any nesting of `error`. */
 export function usageLimitFrom(body: unknown): UsageLimitError | undefined {
@@ -287,6 +297,10 @@ export async function streamOnce(client: OpenAI, req: AgentRequest, signal: Abor
   if (signal.aborted) throw signal.reason ?? new Error('aborted')
   if (idle) throw new TransientModelError(`no stream event for ${idleMs / 1000}s`)
   if (!completed) throw new TransientModelError('stream ended before response.completed')
+  const reportedProgram = completed.access_programs?.cyber
+  if (req.security && reportedProgram !== undefined && reportedProgram !== 'daybreak_blue') {
+    throw new FatalModelError(`Expected Daybreak Blue. Provider reported ${reportedProgram}`)
+  }
   return {
     output: collectOutput(done, completed.output),
     usage: usageOf(completed),

@@ -32,10 +32,25 @@ describe('loadProject', () => {
     const project = await loadProject(root)
     assert.equal(project.search, 'label:x')
     assert.deepEqual(project.concerns.map(c => [c.name, c.body]), [['bugs', 'Bugs body'], ['design', 'Design body']])
+    assert.ok(project.concerns.every(concern => concern.security === false))
     assert.equal(project.docs.get('effects'), 'Effects doc')
     assert.equal(project.instructions, 'Repo rules')
     assert.equal(project.prepare, join(dir, 'prepare'))
   })
+  it('loads a security reviewer flag and rejects other values', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rr-config-'))
+    const dir = join(root, '.rowebotic-review')
+    await mkdir(join(dir, 'concerns'), { recursive: true })
+    await writeFile(join(dir, 'settings.json'), '{}')
+    const path = join(dir, 'concerns', 'security.md')
+    for (const enabled of [true, false]) {
+      await writeFile(path, `---\ndescription: Security\nwhen: always\nsecurity: ${enabled}\n---\nbody`)
+      assert.equal((await loadProject(root)).concerns[0]?.security, enabled)
+    }
+    await writeFile(path, '---\ndescription: Security\nwhen: always\nsecurity: yes\n---\nbody')
+    await assert.rejects(loadProject(root), /concerns\/security.md: frontmatter "security" must be true or false/)
+  })
+
   it('requires description and when', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rr-config-'))
     const dir = join(root, '.rowebotic-review')
