@@ -15,6 +15,8 @@ Report only issues that the diff causes or makes reachable, inside the task's pa
 - anything CI catches: tests, lint, types and formatting
 - generated or gitignored files, which may be stale in this checkout
 
+Weigh how likely users are to encounter an issue against the severity of its consequences. Skip low-impact issues that require an unusual sequence, but keep rare failures when the consequences are serious, such as data loss or unauthorized access.
+
 ## Reading code
 
 - Read PR code with the jj functions at the task's `from` and `to` revisions. Pass the task's revsets in every call.
