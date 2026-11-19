@@ -143,13 +143,13 @@ describe('Watcher', () => {
   })
 })
 
-it('takes at most ten eligible PRs, then picks up the remainder', async () => {
-  const prs = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [i + 1, { sha: `sha${i}`, committedAt: recent, reviews: [] }]))
+it('takes at most five eligible PRs, then picks up the remainder', async () => {
+  const prs = Object.fromEntries(Array.from({ length: 7 }, (_, i) => [i + 1, { sha: `sha${i}`, committedAt: recent, reviews: [] }]))
   const t = fake(prs, Object.keys(prs).map(Number))
   await t.watcher.reviewBatch()
-  assert.deepEqual(t.reviewed, [1,2,3,4,5,6,7,8,9,10])
+  assert.deepEqual(t.reviewed, [1,2,3,4,5])
   await t.watcher.reviewBatch()
-  assert.deepEqual(t.reviewed, [1,2,3,4,5,6,7,8,9,10,11,12])
+  assert.deepEqual(t.reviewed, [1,2,3,4,5,6,7])
 })
 
 it('debounces only previously reviewed PRs and includes the two-minute boundary', async () => {

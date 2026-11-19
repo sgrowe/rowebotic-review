@@ -17,7 +17,7 @@ Run from the root of the repo under review.
 | ------------------------------- | -------------------------------------------------------------------------------- |
 | `rowebotic-review login`        | ChatGPT browser login. Stores tokens in `~/.rowebotic-review/auth.json`.         |
 | `rowebotic-review review <pr>`  | Reviews one PR of the current repo and posts a `COMMENT` review.                 |
-| `rowebotic-review watch`        | Reviews matching PRs in batches of up to ten, forever.                                     |
+| `rowebotic-review watch`        | Reviews matching PRs in batches of up to five, forever.                                    |
 
 The repo comes from `gh repo view`. There is no dry run. The review event is always `COMMENT`: never `APPROVE`, never `REQUEST_CHANGES`. There is no footer.
 
@@ -38,7 +38,7 @@ Run `npm run install-locally` to install and link the tool. Node 24 runs the `.t
 
 ## Model and transport
 
-- The orchestrator and reviewers use `gpt-6.2-sol` at `medium` reasoning effort. Both settings are hardcoded.
+- The orchestrator and reviewers use `gpt-6.2-sol` at `high` reasoning effort. Both settings are hardcoded.
 - ChatGPT subscription through the Codex backend: `openai` SDK with `baseURL: https://chatgpt.com/backend-api/codex`.
 - HTTP SSE through the raw `client.responses.create({ stream: true })`. Not `responses.stream()`: its strict event checks turn Codex quirks into errors. No WebSocket.
 - Stateless: `store: false` and the full input on every request.
@@ -52,7 +52,7 @@ Request body. Everything except `input` is constant for an agent:
   input: [{ role: "developer", content: [{ type: "input_text", text: instructions }] }, ...history],
   tools: [{ type: "function", name: "python", parameters: { code: string }, strict: true }],
   tool_choice: "auto", parallel_tool_calls: false,
-  reasoning: { effort: "medium", summary: "auto" },
+  reasoning: { effort: "high", summary: "auto" },
   store: false, stream: true, include: ["reasoning.encrypted_content"],
   prompt_cache_key,
   text: { format: { type: "json_schema", name, strict: true, schema }, verbosity: "low" } }
@@ -196,7 +196,7 @@ Batch scheduling, in-process:
 - Search: the settings string + ` updated:>=<now − 5 days, ISO> sort:created-asc`, with `--state open --limit 1000`, recomputed every scan.
 - Skip a PR whose head commit is older than 5 days (logged once per head), before fetching its reviews.
 - Skip it if the watcher account has a submitted review for the head SHA whose body starts with the Rowebotic Review heading. Fail it if the account has a pending review.
-- Select up to ten eligible PRs, fetch and prepare once, run reviews concurrently, and await all reviews and cleanup before searching again. Verify submitted reviews against captured head SHAs; new commits arriving during review are allowed.
+- Select up to five eligible PRs (larger batches hit Codex 429 rate limits), fetch and prepare once, run reviews concurrently, and await all reviews and cleanup before searching again. Verify submitted reviews against captured head SHAs; new commits arriving during review are allowed.
 - First Rowebotic reviews qualify immediately within the age restrictions. PRs previously reviewed by Rowebotic require an unreviewed head commit at least two minutes old (commit timestamp, not push time).
 - Three-minute cooldown after individual errors only. Sleep 90 seconds when nothing qualifies or a scan/fetch fails.
 - Account failures leave peers running. After the batch settles, `AuthError` stops the watcher; otherwise usage limits sleep until the latest required reset (+1 minute; 1 hour if unknown).

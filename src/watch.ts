@@ -9,7 +9,7 @@ import { UsageLimitError } from './model.ts'
 export const INTERVAL_MS = 3 * 60 * 1000
 export const IDLE_MS = 90_000
 export const DEBOUNCE_MS = 120_000
-export const MAX_BATCH_SIZE = 10
+export const MAX_BATCH_SIZE = 5
 export const RECENT_MS = 5 * 24 * 60 * 60 * 1000
 const UNKNOWN_RESET_WAIT_MS = 60 * 60 * 1000
 

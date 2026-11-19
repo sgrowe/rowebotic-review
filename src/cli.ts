@@ -11,7 +11,7 @@ import { Watcher } from './watch.ts'
 const usage = `usage:
   rowebotic-review login          sign in with your ChatGPT account (browser)
   rowebotic-review review <pr>    review one PR of the current repo and post the review
-  rowebotic-review watch          review matching PRs in batches of up to ten
+  rowebotic-review watch          review matching PRs in batches of up to five
   rowebotic-review serve          run the watcher and HTTP dashboard
 
 Run review and watch from the repo root, which must contain .rowebotic-review/.`
