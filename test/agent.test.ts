@@ -129,11 +129,11 @@ describe('beforeFinish', () => {
   })
 
   it('offers only the python tool and rejects other tool names', async () => {
-    const other: Item = { type: 'function_call', call_id: 'o1', name: 'review_batch', arguments: '{}' }
+    const other: Item = { type: 'function_call', call_id: 'o1', name: 'other_tool', arguments: '{}' }
     const t = await setup([[other], [message('{"findings":[]}')]])
     await runAgent(t.spec, { transcript: t.transcript, model: t.model })
     assert.deepEqual(t.requests[0]!.req.tools.map(tool => tool.name), ['python'])
     const second = JSON.parse(t.requests[1]!.snapshot) as Item[]
-    assert.match(second.at(-1)!.output, /Unknown tool review_batch/)
+    assert.match(second.at(-1)!.output, /Unknown tool other_tool/)
   })
 })

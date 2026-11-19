@@ -142,13 +142,13 @@ Each agent has exactly one tool, `python(code: string)`, run in Monty (`@pydanti
 
 | Agent        | Functions                                                                                                  | Output                                                                                  |
 | ------------ | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Orchestrator | `jj_*`, `psql_*`, `start_review(...)`, `wait_reviews()`, GitHub `pull_request_read`, `pull_request_review_write`, `add_comment_to_pending_review` | `{ reviewPosted, newFindings, remainingIssues, failedReviewers, skippedConcerns }`     |
+| Orchestrator | `jj_*`, `psql_*`, `start_review(...)`, `wait_reviews()`, `review_results()`, GitHub `pull_request_read`, `pull_request_review_write`, `add_comment_to_pending_review` | `{ reviewPosted, newFindings, remainingIssues, failedReviewers, skippedConcerns }`     |
 | Reviewer     | `jj_*`, `psql_*`, `read_doc(name)` (when the project has docs)                                              | `{ findings: [{ file, line, severity, summary, evidence, scenario \| null }] }`          |
 
 Reviewer delegation is non-blocking, so the orchestrator verifies early reviewers' findings while later ones still run:
 
 - `start_review(*, key, concern, scope, intent) -> str` starts one reviewer on the host and returns its key at once. Duplicate keys (and `orchestrator`, `run`) get a `#2` suffix. `concern` is a `str`; the docstring lists the project's concern names, and an unknown name raises at once with the valid names.
-- `wait_reviews() -> ReviewUpdate { finished: list[ReviewResult], running: list[str] }` returns each `{ key, ok, findings, error }` result once, as reviewers finish. It waits only when no new result is ready, and never raises for a failed reviewer. Reviewers outlive the Python script that started them.
+- `wait_reviews() -> ReviewUpdate { finished: list[ReviewResult], running: list[str] }` returns each `{ key, ok, findings, error }` result once, as reviewers finish. It waits only when no new result is ready, and never raises for a failed reviewer. Reviewers outlive the Python script that started them. `review_results() -> list[ReviewResult]` returns every result delivered so far, to recover after a sandbox reset.
 - `pull_request_review_write` raises while any reviewer is running or has unread results, so a review never silently misses a reviewer.
 - A final answer while results are outstanding is not accepted (`AgentSpec.beforeFinish`): the host waits for a reviewer that finished since the last such wake, then sends a user message (a `request` record with `wake: true`) naming the finished and running keys. Each wake needs a newly finished reviewer, so there is at most one per reviewer. If every finished reviewer was already announced and none is running, the answer is accepted with a warning.
 

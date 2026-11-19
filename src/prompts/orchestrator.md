@@ -39,7 +39,9 @@ update
 
 `wait_reviews()` returns the results of reviewers that finished since the last call, and the keys still `running`. It waits only when no new results are ready. Each reviewer can take up to 20 minutes.
 
-Work on results as they arrive: verify the findings in `update["finished"]` (step 5) while the other reviewers run, then call `wait_reviews()` again. Keep your verified findings in a Python list across scripts. Repeat until `running` is empty. When you have nothing left to verify, call `wait_reviews()` rather than replying; a reply while reviewers are running is not accepted.
+Work on results as they arrive: verify the findings in `update["finished"]` (step 5) while the other reviewers run, then call `wait_reviews()` again. Keep your verified findings in a Python list across scripts. Repeat until `running` is empty. When you have nothing left to verify, call `wait_reviews()` rather than replying; a reply while reviewers are running is not accepted, even when you have to stop.
+
+`wait_reviews()` returns each result only once. If the sandbox state is reset, call `review_results()` to get every result returned so far.
 
 A reviewer failed if `ok` is false. Carry on with the others, and note which reviewer failed and why.
 
@@ -61,7 +63,7 @@ Verify findings yourself; do not start another reviewer to do it. A later review
 
 ## 6. Post one review
 
-Post the review once `wait_reviews()` has returned an empty `running` list, even when there are no findings. Posting fails while reviewer results are outstanding.
+Post the review once `wait_reviews()` has returned an empty `running` list, even when there are no findings. Creating the review fails while reviewer results are outstanding.
 
 Build the verified new findings as a typed list, so their values keep their types:
 

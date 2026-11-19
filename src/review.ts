@@ -182,6 +182,15 @@ export const WAIT_REVIEWS_STUB = `async def wait_reviews() -> ReviewUpdate:
     ...
 `
 
+export const REVIEW_RESULTS_STUB = `async def review_results() -> list[ReviewResult]:
+    """
+    Return every result that wait_reviews() has returned so far, in order.
+
+    Use it to recover results after the sandbox state was reset.
+    """
+    ...
+`
+
 export function readDocStub(names: string[]): string {
   return `async def read_doc(*, name: ${pyLiteral(names)}) -> str:
     """Return a reference document named in your concern's instructions."""
@@ -388,6 +397,7 @@ export function createReviewFunctions(options: {
   const used = new Set<string>(['orchestrator', 'run'])
   const running = new Map<string, Promise<void>>()
   const unread: ReviewResult[] = []
+  const delivered: ReviewResult[] = []
   let finishedCount = 0
   let notifiedCount = 0
   let changed = Promise.withResolvers<void>()
@@ -428,12 +438,18 @@ export function createReviewFunctions(options: {
     stub: WAIT_REVIEWS_STUB,
     call: async (_args, signal): Promise<ReviewUpdate> => {
       await waitForResult(signal)
-      return { finished: unread.splice(0), running: [...running.keys()] }
+      const finished = unread.splice(0)
+      delivered.push(...finished)
+      return { finished, running: [...running.keys()] }
     },
   }
 
   return {
-    functions: [startReview, waitReviews],
+    functions: [startReview, waitReviews, {
+      name: 'review_results',
+      stub: REVIEW_RESULTS_STUB,
+      call: async (): Promise<ReviewResult[]> => [...delivered],
+    }],
     guard: fn => ({
       ...fn,
       call: async (args, signal) => {

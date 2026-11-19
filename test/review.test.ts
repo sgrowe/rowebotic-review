@@ -292,6 +292,30 @@ describe('createReviewFunctions', () => {
     assert.deepEqual(await t.wait(), { finished: [], running: [] })
   })
 
+  it('turns a rejected reviewer into a failed result and keeps delivered results for review_results', async () => {
+    const r = createReviewFunctions({ concerns, log: () => {}, run: async () => { throw new Error('boom') } })
+    const call = (name: string, args = {}) => r.functions.find(f => f.name === name)!.call(args, new AbortController().signal)
+    await call('start_review', { key: 'a', concern: 'bugs', scope: 'all', intent: 'i' })
+    const failed = { key: 'a', ok: false, findings: [], error: 'Error: boom' }
+    assert.deepEqual(await call('wait_reviews'), { finished: [failed], running: [] })
+    assert.deepEqual(await call('review_results'), [failed])
+  })
+
+  it('serves concurrent waits without delivering a result twice, and aborts a wait', async () => {
+    const t = reviews()
+    await t.start('a')
+    const [first, second] = [t.wait(), t.wait()]
+    await t.finish('a')
+    const updates = await Promise.all([first, second])
+    assert.deepEqual(updates.flatMap(u => u.finished.map(r => r.key)), ['a'])
+    await t.start('b')
+    const controller = new AbortController()
+    const aborted = t.wait(controller.signal)
+    controller.abort(new Error('stop'))
+    await assert.rejects(aborted, /stop/)
+    await t.r.close()
+  })
+
   it('refuses guarded writes until every result has been read', async () => {
     const t = reviews()
     const writes: unknown[] = []
