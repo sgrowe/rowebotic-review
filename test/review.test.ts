@@ -5,7 +5,8 @@ import type { Monty } from '@pydantic/monty'
 import type { Concern } from '../src/config.ts'
 import type { McpServer, McpServers } from '../src/mcp.ts'
 import { UsageLimitError } from '../src/model.ts'
-import { batchPoolCapacity, PR_START_INTERVAL_MS, type ChildRun, createReviewRunner, type Finding, createReviewBatchTool, runBatch, startReviewResources, transcriptFile } from '../src/review.ts'
+import { batchPoolCapacity, PR_START_INTERVAL_MS, type ChildRun, createReviewFunctions, createReviewRunner, type Finding, type ReviewResult, type ReviewUpdate, runBatch, startReviewResources, TYPE_DEFS, transcriptFile } from '../src/review.ts'
+import { CodeMode, createPool, type HostFunction } from '../src/codemode.ts'
 
 const concerns: Concern[] = [
   { name: 'design', description: 'd', when: 'always', body: 'design body' },
@@ -238,20 +239,117 @@ it('aborts launch waits and drains active reviews before closing shared resource
 })
 
 
-describe('review_batch', () => {
-  it('validates the whole batch before launching and returns complete ordered results', async () => {
-    const seen: string[] = []
-    const tool = createReviewBatchTool(async request => {
-      seen.push(request.key)
-      await sleep(request.key === 'first' ? 5 : 0)
-      return { key: request.key, ok: true, findings: [{ ...finding, evidence: 'x'.repeat(300001) }], error: null }
+describe('createReviewFunctions', () => {
+  // Each reviewer finishes when the test calls `finish(key)`.
+  function reviews() {
+    const finishers = new Map<string, (result?: Partial<ReviewResult>) => void>()
+    const aborted: string[] = []
+    const logs: string[] = []
+    const r = createReviewFunctions({
+      concerns,
+      log: text => logs.push(text),
+      run: (request, signal) => new Promise<ReviewResult>(resolve => {
+        finishers.set(request.key, result => resolve({ key: request.key, ok: true, findings: [finding], error: null, ...result }))
+        signal.addEventListener('abort', () => {
+          aborted.push(request.key)
+          resolve({ key: request.key, ok: false, findings: [], error: 'aborted' })
+        })
+      }),
     })
+    const fn = (name: string) => r.functions.find(f => f.name === name)!
     const signal = new AbortController().signal
-    await assert.rejects(tool.call({ reviewers: [args('first'), { key: 'invalid' }] }, signal), /review_batch/)
-    assert.deepEqual(seen, [])
-    const result = await tool.call({ reviewers: [args('first'), args('second')] }, signal) as { key: string; findings: Finding[] }[]
-    assert.deepEqual(seen, ['first', 'second'])
-    assert.deepEqual(result.map(r => r.key), ['first', 'second'])
-    assert.equal(result[0]!.findings[0]!.evidence.length, 300001)
+    const start = (key: string, concern = 'bugs') => fn('start_review').call({ key, concern, scope: 'all', intent: 'i' }, signal) as Promise<string>
+    const wait = (s = signal) => fn('wait_reviews').call({}, s) as Promise<ReviewUpdate>
+    const finish = async (key: string, result?: Partial<ReviewResult>) => {
+      finishers.get(key)!(result)
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    return { r, start, wait, finish, aborted, logs, signal }
+  }
+
+  it('starts reviewers without waiting, makes keys unique and rejects unknown concerns', async () => {
+    const t = reviews()
+    assert.equal(await t.start('bugs'), 'bugs')
+    assert.equal(await t.start('bugs'), 'bugs#2')
+    assert.equal(await t.start('orchestrator', 'design'), 'orchestrator#2')
+    await assert.rejects(t.start('x', 'nope'), /unknown concern nope; use one of: bugs, design/)
+    await t.r.close()
+  })
+
+  it('returns each result once, as reviewers finish, and waits when none are ready', async () => {
+    const t = reviews()
+    await t.start('slow')
+    await t.start('fast')
+    let waited: ReviewUpdate | undefined
+    const pending = t.wait().then(update => { waited = update })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(waited, undefined)
+    await t.finish('fast')
+    await pending
+    assert.deepEqual(waited, { finished: [{ key: 'fast', ok: true, findings: [finding], error: null }], running: ['slow'] })
+    await t.finish('slow', { ok: false, findings: [], error: 'timed out' })
+    assert.deepEqual(await t.wait(), { finished: [{ key: 'slow', ok: false, findings: [], error: 'timed out' }], running: [] })
+    assert.deepEqual(await t.wait(), { finished: [], running: [] })
+  })
+
+  it('refuses guarded writes until every result has been read', async () => {
+    const t = reviews()
+    const writes: unknown[] = []
+    const write = t.r.guard({ name: 'pull_request_review_write', stub: '', call: async args => { writes.push(args); return 'ok' } } as HostFunction)
+    await t.start('a')
+    await assert.rejects(write.call({ method: 'create' }, t.signal), /not collected yet: a\. Call wait_reviews\(\)/)
+    await t.finish('a')
+    await assert.rejects(write.call({ method: 'create' }, t.signal), /not collected yet: a/)
+    await t.wait()
+    assert.equal(await write.call({ method: 'create' }, t.signal), 'ok')
+    assert.equal(writes.length, 1)
+  })
+
+  it('wakes an early final answer once per newly finished reviewer', async () => {
+    const t = reviews()
+    assert.equal(await t.r.beforeFinish(t.signal), undefined)
+    await t.start('a')
+    await t.start('b')
+    let wake: string | undefined
+    const pending = t.r.beforeFinish(t.signal).then(text => { wake = text })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(wake, undefined)
+    await t.finish('a')
+    await pending
+    assert.match(wake!, /Finished since your last wait_reviews\(\) call: a\.\nStill running: b\./)
+    // Replying again without reading `a` waits for the next reviewer.
+    const second = t.r.beforeFinish(t.signal)
+    await t.finish('b')
+    assert.match((await second)!, /Finished since your last wait_reviews\(\) call: a, b\.\nStill running: none\./)
+    // Nothing new: accept, with a warning about the unread results.
+    assert.equal(await t.r.beforeFinish(t.signal), undefined)
+    assert.match(t.logs.join('\n'), /unread reviewer results: a, b/)
+  })
+
+  it('aborts reviewers still running on close and waits for them', async () => {
+    const t = reviews()
+    await t.start('a')
+    await t.r.close()
+    assert.deepEqual(t.aborted, ['a'])
+    assert.match(t.logs.join('\n'), /stopping reviewers still running: a/)
+    await assert.rejects(t.start('b'), /can no longer be started/)
+  })
+
+  it('keeps reviewers running between Python scripts', async () => {
+    const t = reviews()
+    const pool = await createPool(1)
+    const codemode = new CodeMode({ pool, functions: t.r.functions, typeDefs: TYPE_DEFS, signal: t.signal })
+    try {
+      const started = await codemode.run('key = await start_review(key="bugs", concern="bugs", scope="all", intent="i")\nkey')
+      assert.equal(started.error, undefined, started.output)
+      assert.equal(started.output, 'bugs')
+      await t.finish('bugs')
+      const collected = await codemode.run('update = await wait_reviews()\nnew_findings: list[NewFinding] = [{**f, "concerns": ["bugs"]} for r in update["finished"] for f in r["findings"]]\n[len(update["running"]), new_findings[0]["file"]]')
+      assert.equal(collected.error, undefined, collected.output)
+      assert.equal(collected.output, '[\n 0,\n "a.ts"\n]')
+    } finally {
+      await codemode.close()
+      await pool.close()
+    }
   })
 })

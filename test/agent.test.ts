@@ -3,7 +3,7 @@ import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
-import { AgentOutputError, ToolArgumentError, type ModelCaller, NUDGE, runAgent } from '../src/agent.ts'
+import { AgentOutputError, type ModelCaller, NUDGE, runAgent } from '../src/agent.ts'
 import type { AgentRequest, Item, ModelResponse } from '../src/model.ts'
 import { Transcript } from '../src/transcript.ts'
 
@@ -108,58 +108,32 @@ describe('runAgent', () => {
 })
 
 
-describe('direct agent tools', () => {
-  const schema = { type: 'function', name: 'review_batch', parameters: { type: 'object' } }
-  const direct = (id: string, arguments_ = '{"reviewers":[]}'): Item => ({ type: 'function_call', call_id: id, name: 'review_batch', arguments: arguments_ })
-
-  it('routes direct calls without Python, keeps tools/history stable, and preserves complete results', async () => {
-    const fullResult = [{ key: 'bugs', findings: [{ evidence: 'x'.repeat(310_000) }] }]
-    const t = await setup([[call('p1', 'saved = 42')], [direct('d1')], [call('p2', 'saved')], [message('{"done":true}')]])
-    const received: unknown[] = []
-    const additionalTools = [{ schema, call: async (args: unknown, signal: AbortSignal) => {
-      assert.equal(signal, t.spec.signal)
-      received.push(args)
-      return fullResult
-    } }]
-    await runAgent({ ...t.spec, role: 'orchestrator', additionalTools }, { transcript: t.transcript, model: t.model })
-    assert.deepEqual(received, [{ reviewers: [] }])
-    assert.deepEqual(t.codes, ['saved = 42', 'saved'])
-    for (const { req } of t.requests) assert.deepEqual(req.tools.map(tool => tool.name), ['python', 'review_batch'])
-    const history = JSON.parse(t.requests.at(-1)!.snapshot) as Item[]
-    const result = history.find(item => item.type === 'function_call_output' && item.call_id === 'd1')!
-    assert.deepEqual(JSON.parse(result.output), fullResult)
-    for (let i = 1; i < t.requests.length; i++) {
-      const previous = JSON.parse(t.requests[i - 1]!.snapshot) as Item[]
-      assert.deepEqual(JSON.parse(t.requests[i]!.snapshot).slice(0, previous.length), previous)
-    }
+describe('beforeFinish', () => {
+  it('sends the wake message and continues until the hook accepts the final answer', async () => {
+    const t = await setup([[message('{"early":true}')], [call('c1', 'x')], [message('{"done":true}')]])
+    const seen: unknown[] = []
+    const result = await runAgent({
+      ...t.spec,
+      beforeFinish: async final => {
+        seen.push(final)
+        return seen.length === 1 ? 'not yet' : undefined
+      },
+    }, { transcript: t.transcript, model: t.model })
+    assert.deepEqual(result, { done: true })
+    assert.deepEqual(seen, [{ early: true }, { done: true }])
+    const second = JSON.parse(t.requests[1]!.snapshot) as Item[]
+    assert.equal(second.at(-1)!.content[0].text, 'not yet')
     const records = (await readFile(t.path, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
-    const execution = records.find(row => row.type === 'tool_exec')
-    assert.equal(execution.callId, 'd1')
-    assert.equal(execution.tool, 'review_batch')
-    assert.deepEqual(execution.arguments, { reviewers: [] })
-    assert.deepEqual(execution.result, fullResult)
-    assert.equal(execution.error, null)
+    assert.ok(records.some(r => r.type === 'request' && r.wake === true))
+    assert.equal(records.filter(r => r.type === 'agent_end').length, 1)
   })
 
-  it('returns correctable errors for unknown tools, invalid JSON, and malformed arguments', async () => {
-    const t = await setup([[{ ...direct('unknown'), name: 'missing' }], [direct('json', '{')], [direct('shape', 'null')], [message('{"done":true}')]])
-    let called = 0
-    await runAgent({ ...t.spec, additionalTools: [{ schema, call: async () => {
-      called++
-      throw new ToolArgumentError('reviewers must be an array')
-    } }] }, { transcript: t.transcript, model: t.model })
-    assert.equal(called, 1)
-    const results = (JSON.parse(t.requests.at(-1)!.snapshot) as Item[]).filter(item => item.type === 'function_call_output')
-    assert.match(results[0]!.output, /Available tools: python, review_batch/)
-    assert.match(results[1]!.output, /valid JSON/)
-    assert.match(results[2]!.output, /reviewers must be an array/)
-  })
-
-  it('propagates unexpected handler failures and defaults reviewers to Python only', async () => {
-    const t = await setup([[direct('d')]])
-    await assert.rejects(runAgent({ ...t.spec, additionalTools: [{ schema, call: async () => { throw new Error('fatal') } }] }, { transcript: t.transcript, model: t.model }), /fatal/)
-    const reviewer = await setup([[message('{"findings":[]}')]])
-    await runAgent(reviewer.spec, { transcript: reviewer.transcript, model: reviewer.model })
-    assert.deepEqual(reviewer.requests[0]!.req.tools.map(tool => tool.name), ['python'])
+  it('offers only the python tool and rejects other tool names', async () => {
+    const other: Item = { type: 'function_call', call_id: 'o1', name: 'review_batch', arguments: '{}' }
+    const t = await setup([[other], [message('{"findings":[]}')]])
+    await runAgent(t.spec, { transcript: t.transcript, model: t.model })
+    assert.deepEqual(t.requests[0]!.req.tools.map(tool => tool.name), ['python'])
+    const second = JSON.parse(t.requests[1]!.snapshot) as Item[]
+    assert.match(second.at(-1)!.output, /Unknown tool review_batch/)
   })
 })

@@ -1,5 +1,6 @@
 // One review run: prepare the repo, fetch PR context, run the orchestrator,
-// which starts reviewers through the `review_batch` tool.
+// which starts reviewers with the `start_review()` host function and collects
+// them with `wait_reviews()`.
 
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -7,7 +8,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { Monty } from '@pydantic/monty'
 import { AuthError, homeDir, TokenStore } from './auth.ts'
-import { describeError, modelCaller, runAgent, type AgentTool, ToolArgumentError } from './agent.ts'
+import { describeError, modelCaller, runAgent } from './agent.ts'
 import { buildStubs, CodeMode, createPool, type HostFunction, mcpHostFunctions } from './codemode.ts'
 import { type Concern, loadProject, type ProjectConfig } from './config.ts'
 import { fetchContext, GitHub, type Repo, type PullRequest, repoSlug, run } from './github.ts'
@@ -107,6 +108,7 @@ export const orchestratorFormat: Item = {
 
 export type Finding = { file: string; line: number; severity: string; summary: string; evidence: string; scenario: string | null }
 export type ReviewResult = { key: string; ok: boolean; findings: Finding[]; error: string | null }
+export type ReviewUpdate = { finished: ReviewResult[]; running: string[] }
 export type OrchestratorResult = {
   reviewPosted: boolean
   newFindings: { concerns: string[]; file: string; line: number; severity: string; summary: string }[]
@@ -115,7 +117,25 @@ export type OrchestratorResult = {
   skippedConcerns: { concern: string; reason: string }[]
 }
 
-export const TYPE_DEFS = `class NewFinding(TypedDict):
+export const TYPE_DEFS = `class Finding(TypedDict):
+    file: str
+    line: int
+    severity: Literal["blocker", "major", "minor"]
+    summary: str
+    evidence: str
+    scenario: str | None
+
+class ReviewResult(TypedDict):
+    key: str
+    ok: bool
+    findings: list[Finding]
+    error: str | None
+
+class ReviewUpdate(TypedDict):
+    finished: list[ReviewResult]
+    running: list[str]
+
+class NewFinding(TypedDict):
     concerns: list[str]
     file: str
     line: int
@@ -130,6 +150,37 @@ export const TYPE_DEFS = `class NewFinding(TypedDict):
 function pyLiteral(names: string[]): string {
   return `Literal[${names.map(name => JSON.stringify(name)).join(', ')}]`
 }
+
+export function startReviewStub(concerns: Concern[]): string {
+  const names = concerns.map(c => JSON.stringify(c.name)).sort()
+  return `async def start_review(*, key: str, concern: str, scope: str, intent: str) -> str:
+    """
+    Start one reviewer in the background and return its key at once.
+
+    The key gets a "#2" suffix if it is already used. Collect results with
+    wait_reviews(). Each reviewer can take up to 20 minutes.
+
+    Args:
+        key: unique name for this reviewer, e.g. "bugs-server".
+        concern: the concern to review, one of: ${names.join(', ')}.
+        scope: path scope, e.g. "app/server/**" or "all changed files".
+        intent: one or two sentences on what the PR is for.
+    """
+    ...
+`
+}
+
+export const WAIT_REVIEWS_STUB = `async def wait_reviews() -> ReviewUpdate:
+    """
+    Return the results of reviewers that finished since the last call, and the
+    keys of reviewers still running.
+
+    Waits until a reviewer finishes when no new results are ready. A failed
+    reviewer comes back with ok=False and an error; this never raises for one.
+    When \`running\` is empty, every result has been returned.
+    """
+    ...
+`
 
 export function readDocStub(names: string[]): string {
   return `async def read_doc(*, name: ${pyLiteral(names)}) -> str:
@@ -151,7 +202,7 @@ function serverSections(servers: Pick<McpServers, 'jj' | 'psql'>): string[] {
 
 function concernsSection(concerns: Concern[]): string {
   const lines = concerns.map(c => `- \`${c.name}\`: ${c.description} Runs when: ${c.when}.`)
-  return `## Concerns\n\nPass the name as \`concern\` in \`review_batch\`.\n\n${lines.join('\n')}`
+  return `## Concerns\n\nPass the name as \`concern\` to \`start_review()\`.\n\n${lines.join('\n')}`
 }
 
 function projectSection(project: ProjectConfig): string[] {
@@ -260,9 +311,7 @@ export function createReviewRunner(options: ReviewFunctionOptions): (args: Revie
       const names = options.concerns.map(c => c.name).sort().join(', ')
       return { key, ok: false, findings: [], error: `unknown concern ${String(args.concern)}; use one of: ${names}` }
     }
-    let id = key
-    for (let n = 2; usedIds.has(id); n++) id = `${key}#${n}`
-    usedIds.add(id)
+    const id = uniqueKey(usedIds, key)
 
     let openGate: (() => void) | undefined
     if (!gate) {
@@ -302,29 +351,121 @@ export function createReviewRunner(options: ReviewFunctionOptions): (args: Revie
   }
 }
 
-export function createReviewBatchTool(run: (args: ReviewerRequest, signal: AbortSignal) => Promise<ReviewResult>): AgentTool {
-  const fields = ['key', 'concern', 'scope', 'intent'] as const
-  return {
-    schema: {
-      type: 'function', name: 'review_batch', strict: true,
-      description: 'Start parallel reviewers and return their complete findings in input order. Each reviewer may take up to 20 minutes; failed reviewers return ok=false. Choose concern names from the instructions.',
-      parameters: {
-        type: 'object', additionalProperties: false, required: ['reviewers'],
-        properties: { reviewers: { type: 'array', items: {
-          type: 'object', additionalProperties: false, required: fields,
-          properties: Object.fromEntries(fields.map(field => [field, { type: 'string' }])),
-        } } },
-      },
-    },
+export type ReviewFunctions = {
+  /** `start_review` and `wait_reviews`. */
+  functions: HostFunction[]
+  /** Wraps a GitHub write so it fails while reviewer results are still outstanding. */
+  guard: (fn: HostFunction) => HostFunction
+  /**
+   * The orchestrator's `beforeFinish` hook: accepts the final answer when every
+   * result has been read, otherwise waits for a reviewer to finish and returns
+   * a message that wakes the orchestrator.
+   */
+  beforeFinish: (signal: AbortSignal) => Promise<string | undefined>
+  /** Aborts reviewers still running and waits for them to settle. */
+  close: () => Promise<void>
+}
+
+/** Reserves a unique agent id based on `key`. */
+function uniqueKey(used: Set<string>, key: string): string {
+  let id = key
+  for (let n = 2; used.has(id); n++) id = `${key}#${n}`
+  used.add(id)
+  return id
+}
+
+/**
+ * The orchestrator's non-blocking reviewer functions. Reviewers run on the
+ * host between Python scripts; results wait in a queue until `wait_reviews()`
+ * returns them.
+ */
+export function createReviewFunctions(options: {
+  concerns: Concern[]
+  run: (args: ReviewerRequest, signal: AbortSignal) => Promise<ReviewResult>
+  log: (text: string) => void
+}): ReviewFunctions {
+  const controller = new AbortController()
+  const used = new Set<string>(['orchestrator', 'run'])
+  const running = new Map<string, Promise<void>>()
+  const unread: ReviewResult[] = []
+  let finishedCount = 0
+  let notifiedCount = 0
+  let changed = Promise.withResolvers<void>()
+
+  const waitForResult = async (signal: AbortSignal) => {
+    while (!unread.length && running.size) await abortableWait(changed.promise, signal)
+  }
+  const outstanding = () => [...running.keys(), ...unread.map(result => result.key)]
+
+  const startReview: HostFunction = {
+    name: 'start_review',
+    stub: startReviewStub(options.concerns),
     call: async (args, signal) => {
-      if (!args || typeof args !== 'object' || Array.isArray(args) ||
-        Object.keys(args).length !== 1 || !('reviewers' in args) || !Array.isArray(args.reviewers) ||
-        !args.reviewers.every(item => item && typeof item === 'object' && !Array.isArray(item) &&
-          Object.keys(item).length === fields.length && fields.every(field => typeof item[field] === 'string'))) {
-        throw new ToolArgumentError('Call review_batch with {"reviewers":[{"key":"...","concern":"...","scope":"...","intent":"..."}]}')
-      }
       signal.throwIfAborted()
-      return Promise.all((args.reviewers as ReviewerRequest[]).map(item => run(item, signal)))
+      if (controller.signal.aborted) throw new Error('reviewers can no longer be started')
+      const concern = String(args.concern)
+      if (!options.concerns.some(c => c.name === concern)) {
+        throw new Error(`unknown concern ${concern}; use one of: ${options.concerns.map(c => c.name).sort().join(', ')}`)
+      }
+      const key = uniqueKey(used, String(args.key ?? 'reviewer'))
+      const request = { key, concern, scope: String(args.scope), intent: String(args.intent) }
+      const task = options.run(request, AbortSignal.any([signal, controller.signal]))
+        .catch((error): ReviewResult => ({ key, ok: false, findings: [], error: describeError(error) }))
+        .then(result => {
+          running.delete(key)
+          unread.push(result)
+          finishedCount++
+          changed.resolve()
+          changed = Promise.withResolvers<void>()
+        })
+      running.set(key, task)
+      return key
+    },
+  }
+
+  const waitReviews: HostFunction = {
+    name: 'wait_reviews',
+    stub: WAIT_REVIEWS_STUB,
+    call: async (_args, signal): Promise<ReviewUpdate> => {
+      await waitForResult(signal)
+      return { finished: unread.splice(0), running: [...running.keys()] }
+    },
+  }
+
+  return {
+    functions: [startReview, waitReviews],
+    guard: fn => ({
+      ...fn,
+      call: async (args, signal) => {
+        const keys = outstanding()
+        if (keys.length) throw new Error(`reviewer results not collected yet: ${keys.join(', ')}. Call wait_reviews() until running is empty, verify the findings, then post.`)
+        return fn.call(args, signal)
+      },
+    }),
+    beforeFinish: async signal => {
+      if (!outstanding().length) return undefined
+      if (!unread.length || finishedCount === notifiedCount) {
+        // Nothing new to report yet: wait for the next reviewer to finish.
+        if (!running.size) {
+          options.log(`warning: finished with unread reviewer results: ${outstanding().join(', ')}`)
+          return undefined
+        }
+        await abortableWait(changed.promise, signal)
+        signal.throwIfAborted()
+      }
+      notifiedCount = finishedCount
+      const finished = unread.map(result => result.key)
+      return [
+        `Your reply was not accepted: reviewer results are still outstanding.`,
+        `Finished since your last wait_reviews() call: ${finished.join(', ') || 'none'}.`,
+        `Still running: ${[...running.keys()].join(', ') || 'none'}.`,
+        'Call wait_reviews(), verify the new findings, post the review once running is empty, then reply again.',
+      ].join('\n')
+    },
+    close: async () => {
+      if (running.size) options.log(`stopping reviewers still running: ${[...running.keys()].join(', ')}`)
+      controller.abort(new Error('the orchestrator finished'))
+      await Promise.all(running.values())
     },
   }
 }
@@ -470,6 +611,7 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
   let servers: McpServers | undefined
   let pool: Monty | undefined
   const codemodes: CodeMode[] = []
+  let reviews: ReviewFunctions | undefined
   const started = Date.now()
   transcript.write('run_start', 'run', {
     repo: repoSlug(repo),
@@ -538,7 +680,9 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
       },
     })
 
-    const orchestratorFunctions = [...mcpHostFunctions(mcp.jj), ...mcpHostFunctions(mcp.psql), ...mcpHostFunctions(mcp.github)]
+    reviews = createReviewFunctions({ concerns: project.concerns, run: reviewRunner, log: text => transcript.log('orchestrator', text) })
+    const githubFunctions = mcpHostFunctions(mcp.github).map(fn => (fn.name === 'pull_request_review_write' ? reviews!.guard(fn) : fn))
+    const orchestratorFunctions = [...mcpHostFunctions(mcp.jj), ...mcpHostFunctions(mcp.psql), ...githubFunctions, ...reviews.functions]
     const orchestratorInstructions = buildInstructions([
       prompt('orchestrator'),
       prompt('codemode'),
@@ -577,7 +721,7 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
           textFormat: orchestratorFormat,
           firstMessage,
           codemode: orchestratorCodemode,
-          additionalTools: [createReviewBatchTool(reviewRunner)],
+          beforeFinish: (_final, signal) => reviews!.beforeFinish(signal),
           signal: orchestratorSignal,
         },
         { transcript, model },
@@ -599,6 +743,7 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
     print(`transcript: ${transcript.path}`)
     throw error
   } finally {
+    await reviews?.close()
     options.onTranscript?.(transcript.path, true)
     await Promise.all(codemodes.map(codemode => codemode.close()))
     if (!options.prepared) {
