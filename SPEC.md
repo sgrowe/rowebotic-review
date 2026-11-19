@@ -114,9 +114,10 @@ Classification, in order:
 1. Our abort (the run or agent signal fired) → rethrow, never retry. This is checked after the iterator ends too, because the SDK ends the stream silently on abort.
 2. Idle timeout (no SSE event for 5 minutes, own timer and flag) → transient.
 3. Usage limit: `code` or `type` in `usage_limit_reached | usage_not_included | rate_limit_exceeded` with `resets_at`, on an HTTP 429 body or a stream event → `UsageLimitError { resetsAt }`. `rate_limit_exceeded` without `resets_at` is transient.
-4. Fatal: `context_length_exceeded`, `invalid_request_error`, `invalid_prompt`, other 4xx → fail.
-5. 401 → force a token refresh and retry once.
-6. Everything else is transient: `APIConnectionError`, any non-`APIError` from the iterator (undici `TypeError: terminated`), `APIError` with 408/409/429/5xx or no status (SSE `error` events surface as a thrown `APIError` with `status` undefined), `{ type: "error" }` and `response.failed` events, and EOF without `response.completed`.
+4. Cybersecurity content flag (the message says "flagged for possible cybersecurity risk", on any error type) → retry once after the first backoff step, then fail with `FatalModelError`. A retry sometimes passes; later ones almost never did, and five retries held a PR's review for about three minutes.
+5. Fatal: `context_length_exceeded`, `invalid_request_error`, `invalid_prompt`, other 4xx → fail.
+6. 401 → force a token refresh and retry once.
+7. Everything else is transient: `APIConnectionError`, any non-`APIError` from the iterator (undici `TypeError: terminated`), `APIError` with 408/409/429/5xx or no status (SSE `error` events surface as a thrown `APIError` with `status` undefined), `{ type: "error" }` and `response.failed` events, and EOF without `response.completed`.
 
 `response.incomplete` fails without retry.
 

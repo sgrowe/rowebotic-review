@@ -313,6 +313,16 @@ describe('callModel', () => {
     await assert.rejects(again.promise, AuthError)
   })
 
+  it('retries a cybersecurity content flag once, then fails', async () => {
+    const flagged = () => new Response(`event: error\ndata: ${JSON.stringify({ error: { type: 'invalid_request_error', message: 'This content was flagged for possible cybersecurity risk.' } })}\n\n`, { headers: sseHeaders })
+    const passes = await run([flagged, ok])
+    await passes.promise
+    assert.deepEqual(passes.retries.map(r => r.kind), ['content_flag'])
+    const fails = await run([flagged, flagged, ok])
+    await assert.rejects(fails.promise, (error: Error) => error instanceof FatalModelError && /cybersecurity filter after 1 retry/.test(error.message))
+    assert.equal(fails.retries.length, 1)
+  })
+
   it('gives up after the backoff ladder', async () => {
     const busy = () => new Response('{}', { status: 502 })
     const { promise, retries } = await run([busy, busy, busy, busy, busy, busy, ok])

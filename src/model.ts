@@ -135,6 +135,11 @@ export type Classified =
   | { kind: 'auth'; message: string }
   | { kind: 'auth_fatal'; error: AuthError }
   | { kind: 'fatal'; message: string }
+  /** Codex's cybersecurity filter flagged the request. A retry sometimes passes; more rarely do. */
+  | { kind: 'content_flag'; message: string }
+
+const CONTENT_FLAG = /flagged for possible cybersecurity risk/i
+export const CONTENT_FLAG_RETRIES = 1
 
 export function retryAfterMs(headers: Headers | undefined | null): number | undefined {
   if (!headers) return undefined
@@ -156,6 +161,7 @@ function message(error: unknown): string {
 export function classify(error: unknown, aborted: boolean): Classified {
   if (aborted) return { kind: 'abort' }
   if (error instanceof UsageLimitError) return { kind: 'usage_limit', error }
+  if (CONTENT_FLAG.test(message(error))) return { kind: 'content_flag', message: message(error) }
   if (error instanceof FatalModelError) return { kind: 'fatal', message: error.message }
   if (error instanceof TransientModelError) return { kind: 'transient', message: error.message }
   // The SDK wraps errors thrown by the apiKey callback in OpenAIError.
@@ -317,6 +323,7 @@ export async function callModel(client: OpenAI, req: AgentRequest, options: Call
   const backoff = options.backoffMs ?? BACKOFF_MS
   const random = options.random ?? Math.random
   let retries = 0
+  let flagRetries = 0
   let refreshedAuth = false
   while (true) {
     try {
@@ -341,6 +348,20 @@ export async function callModel(client: OpenAI, req: AgentRequest, options: Call
           } catch (refreshError) {
             if (refreshError instanceof AuthError) throw refreshError
             throw new AuthError(`Token refresh failed: ${message(refreshError)}`)
+          }
+          continue
+        }
+        case 'content_flag': {
+          if (flagRetries >= CONTENT_FLAG_RETRIES) {
+            throw new FatalModelError(`flagged by the cybersecurity filter after ${flagRetries} ${flagRetries === 1 ? 'retry' : 'retries'}: ${classified.message}`)
+          }
+          flagRetries++
+          const delayMs = backoffDelay(0, {}, backoff, random)
+          options.onRetry?.({ attempt: flagRetries, delayMs, kind: 'content_flag', error: classified.message })
+          try {
+            await sleep(delayMs, undefined, { signal: options.signal })
+          } catch {
+            throw options.signal.reason ?? error
           }
           continue
         }
