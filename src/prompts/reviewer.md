@@ -8,9 +8,12 @@ You can't ask the orchestrator questions. If the task is unclear, for example a 
 
 ## Scope
 
-Report only issues that the diff causes or makes reachable, inside the task's path scope. You may read code outside the scope for context. Skip:
+Report only issues that the diff causes or makes reachable, inside the task's path scope. You may read code outside the scope for context.
+
+Ignore:
 
 - issues that existed before the diff
+- general issues with that product area/feature which are not specific to this change
 - style nits
 - anything CI catches: tests, lint, types and formatting
 - generated or gitignored files, which may be stale in this checkout
