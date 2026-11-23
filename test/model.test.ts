@@ -199,7 +199,7 @@ describe('callModel', () => {
     assert.equal(response.requestId, 'req_1')
     assert.equal(response.turnState, 'ts_1')
     const body = JSON.parse(fake.bodies[0]!)
-    assert.equal(body.model, 'gpt-6.2-sol')
+    assert.equal(body.model, 'gpt-6.1-sol')
     assert.equal(Object.hasOwn(body, 'instructions'), false)
     assert.deepEqual(body.input, [
       { role: 'developer', content: [{ type: 'input_text', text: 'review' }] },

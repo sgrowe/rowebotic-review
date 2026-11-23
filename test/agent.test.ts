@@ -98,7 +98,7 @@ describe('runAgent', () => {
     const firstRecord = JSON.parse((await readFile(t.path, 'utf8')).split('\n')[0]!)
     assert.equal(firstRecord.model, 'gpt-6-sol')
     assert.deepEqual(firstRecord.access_programs, { cyber: 'daybreak_blue' })
-    assert.equal(requestBody({ ...t.requests[0]!.req, security: false }).model, 'gpt-6.2-sol')
+    assert.equal(requestBody({ ...t.requests[0]!.req, security: false }).model, 'gpt-6.1-sol')
     assert.equal('access_programs' in requestBody({ ...t.requests[0]!.req, security: false }), false)
   })
 

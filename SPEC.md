@@ -38,7 +38,7 @@ Run `npm run install-locally` to install and link the tool. Node 24 runs the `.t
 
 ## Model and transport
 
-- The orchestrator and ordinary reviewers use `gpt-6.2-sol`. A concern can set `security: true` in its frontmatter to use `gpt-6-sol` with Daybreak Blue on each reviewer turn. All agents use `high` reasoning effort. A provider access error is reported as a failure of the affected reviewer.
+- The orchestrator and ordinary reviewers use `gpt-6.1-sol`. A concern can set `security: true` in its frontmatter to use `gpt-6-sol` with Daybreak Blue on each reviewer turn. All agents use `high` reasoning effort. A provider access error is reported as a failure of the affected reviewer.
 - ChatGPT subscription through the Codex backend: `openai` SDK with `baseURL: https://chatgpt.com/backend-api/codex`.
 - HTTP SSE through the raw `client.responses.create({ stream: true })`. Not `responses.stream()`: its strict event checks turn Codex quirks into errors. No WebSocket.
 - Stateless: `store: false` and the full input on every request.
