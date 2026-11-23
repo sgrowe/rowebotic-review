@@ -80,13 +80,17 @@ async function runWithLock(
   task: (client: pg.Client, signal: AbortSignal) => Promise<void>,
   report: Report,
   signal: AbortSignal,
+  stopping: AbortSignal,
 ): Promise<void> {
-  while (!signal.aborted) {
+  const halt = AbortSignal.any([signal, stopping])
+  while (!halt.aborted) {
     const client = new pg.Client({
       connectionString, connectionTimeoutMillis: 5000, query_timeout: 5000, keepAlive: true,
     })
     const lost = new AbortController()
     const stop = AbortSignal.any([signal, lost.signal])
+    // Waits also wake on a soft stop; the watcher itself drains on `stopping`.
+    const waitStop = AbortSignal.any([stop, stopping])
     client.on('error', error => lost.abort(error))
     client.on('end', () => lost.abort(new Error('Coordination connection closed')))
     let heartbeat: NodeJS.Timeout | undefined
@@ -96,32 +100,32 @@ async function runWithLock(
       await client.connect()
       phase = 'waiting for previous revision'
       report(phase)
-      while (!stop.aborted) {
+      while (!waitStop.aborted) {
         const result = await client.query<{ acquired: boolean }>(
           'SELECT pg_try_advisory_lock(1380931397, 1) AS acquired',
         )
         if (result.rows[0]?.acquired) break
-        await sleep(5000, undefined, { signal: stop })
+        await sleep(5000, undefined, { signal: waitStop })
       }
-      stop.throwIfAborted()
+      waitStop.throwIfAborted()
       heartbeat = setInterval(() => {
         void client.query('SELECT 1').catch(error => lost.abort(error))
       }, 5000)
       await task(client, stop)
       if (lost.signal.aborted) throw lost.signal.reason
     } catch (error) {
-      if (signal.aborted) return
+      if (halt.aborted) return
       phase = lost.signal.aborted ? 'database connection lost' : phase
       report(phase, error)
     } finally {
       clearInterval(heartbeat)
       await client.end().catch(() => {})
     }
-    await sleep(retryMs, undefined, { signal }).catch(() => {})
+    await sleep(retryMs, undefined, { signal: halt }).catch(() => {})
   }
 }
 
-export async function serve(log: (line: string) => void, signal: AbortSignal): Promise<void> {
+export async function serve(log: (line: string) => void, signal: AbortSignal, stopping: AbortSignal): Promise<void> {
   const connectionString = required('DATABASE_URL')
   const bootstrap = required('ROWEBOTIC_CHATGPT_AUTH')
   const expectedLogin = required('ROWEBOTIC_GITHUB_LOGIN')
@@ -169,7 +173,8 @@ export async function serve(log: (line: string) => void, signal: AbortSignal): P
   try {
     await runWithLock(connectionString, async (client, stop) => {
       let tokens: TokenStore | undefined
-      while (!stop.aborted) {
+      const halt = AbortSignal.any([stop, stopping])
+      while (!halt.aborted) {
         let failure = 'startup failed'
         try {
           report('preparing checkout')
@@ -191,7 +196,7 @@ export async function serve(log: (line: string) => void, signal: AbortSignal): P
           await tokens.accessToken()
           const model = await createReviewModel(tokens)
           const watcher = new Watcher({
-            github, repo, login, search: project.search, idleDelay: project.idleDelay, log, signal: stop,
+            github, repo, login, search: project.search, idleDelay: project.idleDelay, log, signal: stop, stopping,
             onStatus: ({ phase, at, nextPollAt }) => {
               if (phase !== 'retrying' || status.phase !== 'preparation failed') status.phase = phase
               if (phase === 'polling') status.lastPollAt = at
@@ -204,7 +209,7 @@ export async function serve(log: (line: string) => void, signal: AbortSignal): P
               }))
               return reviewBatch({
                 root, project, prs, model, strictPrepare: true, print: log,
-                signal: batchSignal, onTranscript: archive.track,
+                signal: batchSignal, stopping, onTranscript: archive.track,
                 onStage: phase => { status.phase = phase },
               })
             },
@@ -212,12 +217,12 @@ export async function serve(log: (line: string) => void, signal: AbortSignal): P
           await watcher.run()
           return
         } catch (error) {
-          if (stop.aborted) return
+          if (halt.aborted) return
           report(failure, error)
-          await sleep(retryMs, undefined, { signal: stop }).catch(() => {})
+          await sleep(retryMs, undefined, { signal: halt }).catch(() => {})
         }
       }
-    }, report, signal)
+    }, report, signal, stopping)
   } finally {
     server.close()
     await archive.close()

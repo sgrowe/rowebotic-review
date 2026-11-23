@@ -11,7 +11,7 @@ import { AuthError, homeDir, TokenStore } from './auth.ts'
 import { describeError, modelCaller, runAgent } from './agent.ts'
 import { buildStubs, CodeMode, createPool, type HostFunction, mcpHostFunctions } from './codemode.ts'
 import { type Concern, loadProject, type ProjectConfig } from './config.ts'
-import { fetchContext, GitHub, type Repo, type PullRequest, repoSlug, run } from './github.ts'
+import { fetchContext, GitHub, pendingReviewBlocker, type Repo, type PullRequest, repoSlug, run } from './github.ts'
 import { closeServers, type McpServers, startServers } from './mcp.ts'
 import { createClient, type Item, MODEL, REASONING_EFFORT, UsageLimitError } from './model.ts'
 import { Transcript } from './transcript.ts'
@@ -228,6 +228,8 @@ export type ReviewOptions = {
   root: string
   prNumber: number
   signal: AbortSignal
+  /** Soft stop: start no new orchestrator or reviewers, but let running ones finish. */
+  stopping?: AbortSignal
   print?: (line: string) => void
   onTranscript?: (path: string, finished: boolean) => void
   prepared?: { project: ProjectConfig; repo: Repo; pr: PullRequest; servers: McpServers; pool: Monty; model: ReturnType<typeof modelCaller>; batchId: string; batchSize: number; poolCapacity: number }
@@ -394,6 +396,9 @@ export function createReviewFunctions(options: {
   concerns: Concern[]
   run: (args: ReviewerRequest, signal: AbortSignal) => Promise<ReviewResult>
   log: (text: string) => void
+  /** Soft stop. A run still fanning out is not close to posting, so `stopRun` ends it unposted. */
+  stopping?: AbortSignal
+  stopRun?: (error: Error) => void
 }): ReviewFunctions {
   const controller = new AbortController()
   const used = new Set<string>(['orchestrator', 'run'])
@@ -415,6 +420,12 @@ export function createReviewFunctions(options: {
     call: async (args, signal) => {
       signal.throwIfAborted()
       if (controller.signal.aborted) throw new Error('reviewers can no longer be started')
+      if (options.stopping?.aborted) {
+        // Posting now would mark the head reviewed with partial coverage; the next run retries it.
+        const error = new Error('shutting down; no new reviewers can start')
+        options.stopRun?.(error)
+        throw error
+      }
       const concern = String(args.concern)
       if (!options.concerns.some(c => c.name === concern)) {
         throw new Error(`unknown concern ${concern}; use one of: ${options.concerns.map(c => c.name).sort().join(', ')}`)
@@ -525,19 +536,32 @@ export async function runBatch<T, R, O>(items: T[], lifecycle: {
   review: (item: T, resources: R) => Promise<O>
   close: (resources: R) => Promise<void>
   signal?: AbortSignal
+  /** Soft stop: launch no further items; launched ones keep running. Unlaunched items reject. */
+  stopping?: AbortSignal
   wait?: (ms: number, signal?: AbortSignal) => Promise<unknown>
 }): Promise<PromiseSettledResult<O>[]> {
   if (!items.length) return []
   lifecycle.signal?.throwIfAborted()
+  if (lifecycle.stopping?.aborted) return items.map(() => ({ status: 'rejected', reason: new Error('shutting down') }))
   await lifecycle.prepare()
   const resources = await lifecycle.start()
   const pending: Promise<PromiseSettledResult<O>>[] = []
   const wait = lifecycle.wait ?? ((ms, signal) => sleep(ms, undefined, { signal }))
+  const { signal, stopping } = lifecycle
+  const waitSignal = signal && stopping ? AbortSignal.any([signal, stopping]) : (signal ?? stopping)
   try {
     for (const [index, item] of items.entries()) {
-      lifecycle.signal?.throwIfAborted()
-      if (index > 0) await wait(PR_START_INTERVAL_MS, lifecycle.signal)
-      lifecycle.signal?.throwIfAborted()
+      signal?.throwIfAborted()
+      if (index > 0 && !stopping?.aborted) {
+        await wait(PR_START_INTERVAL_MS, waitSignal).catch(error => {
+          if (!stopping?.aborted || signal?.aborted) throw error
+        })
+      }
+      signal?.throwIfAborted()
+      if (stopping?.aborted) {
+        pending.push(Promise.resolve({ status: 'rejected', reason: new Error('shutting down') }))
+        continue
+      }
       // Attach rejection handling immediately: an earlier review may fail while
       // the next start is delayed, without interrupting its peers.
       pending.push((async () => lifecycle.review(item, resources))().then(
@@ -560,6 +584,7 @@ export async function reviewBatch(options: {
   root: string
   prs: PullRequest[]
   signal: AbortSignal
+  stopping?: AbortSignal
   model: ReturnType<typeof modelCaller>
   print?: (line: string) => void
   project?: ProjectConfig
@@ -579,6 +604,7 @@ export async function reviewBatch(options: {
   print(`Batch ${batchId}: ${batchSize} PRs, ${poolCapacity} workers, ${PR_START_INTERVAL_MS / 1000}s between PR starts`)
   const results = await runBatch(options.prs, {
     signal: options.signal,
+    stopping: options.stopping,
     prepare: async () => {
       options.onStage?.('preparing')
       try {
@@ -594,7 +620,7 @@ export async function reviewBatch(options: {
       return resources
     },
     review: (pr, resources) => reviewPr({
-      root: options.root, prNumber: pr.number, signal: options.signal,
+      root: options.root, prNumber: pr.number, signal: options.signal, stopping: options.stopping,
       print: line => print(`[PR #${pr.number}] ${line}`),
       onTranscript: options.onTranscript,
       prepared: { project, repo, pr, ...resources, model: options.model, batchId, batchSize, poolCapacity },
@@ -647,6 +673,16 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
     const changeId = (await run('jj', ['log', '-r', headSha, '-T', 'change_id', '--no-graph', '--ignore-working-copy'], { cwd: project.root, signal: runSignal })).trim()
     const from = await prFrom(project.root, pr.base.ref, headSha, runSignal, log)
     const to = headSha
+    // GitHub allows one pending review per account per PR. A fresh one may be someone's draft; a
+    // stale one is usually left by a run killed mid-post, so clear it before posting.
+    if (options.stopping?.aborted) throw new Error('shutting down')
+    const pending = await github.pendingReview(repo, pr.number)
+    if (pending) {
+      const blocker = pendingReviewBlocker(pending, Date.now())
+      if (blocker) throw new Error(blocker)
+      const outcome = await github.flushPendingReview(repo, pr.number, pending)
+      log(`${outcome} an abandoned pending review with ${pending.commentCount} comments`)
+    }
     const context = await fetchContext(github, repo, pr)
 
     ;({ servers, pool } = options.prepared ?? await startReviewResources(() => startServers(project.root), createPool))
@@ -699,7 +735,7 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
       },
     })
 
-    reviews = createReviewFunctions({ concerns: project.concerns, run: reviewRunner, log: text => transcript.log('orchestrator', text) })
+    reviews = createReviewFunctions({ concerns: project.concerns, run: reviewRunner, log: text => transcript.log('orchestrator', text), stopping: options.stopping, stopRun: error => runController.abort(error) })
     const githubFunctions = mcpHostFunctions(mcp.github).map(fn => (fn.name === 'pull_request_review_write' ? reviews!.guard(fn) : fn))
     const orchestratorFunctions = [...mcpHostFunctions(mcp.jj), ...mcpHostFunctions(mcp.psql), ...githubFunctions, ...reviews.functions]
     const orchestratorInstructions = buildInstructions([
@@ -730,6 +766,7 @@ export async function reviewPr(options: ReviewOptions): Promise<ReviewOutcome> {
     ].join('\n')
 
     let result: OrchestratorResult
+    if (options.stopping?.aborted) throw new Error('shutting down')
     try {
       result = (await runAgent(
         {

@@ -1,17 +1,20 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import type { PullRequest, Review } from '../src/github.ts'
+import { STALE_PENDING_MS, type PullRequest, type Review } from '../src/github.ts'
 import { AuthError } from '../src/auth.ts'
 import { UsageLimitError } from '../src/model.ts'
 import { IDLE_MS, INTERVAL_MS, RECENT_MS, searchQuery, Watcher } from '../src/watch.ts'
 
 const NOW = Date.parse('2026-11-05T12:00:00Z')
 
-type FakePr = { sha: string; committedAt: number; reviews: Review[] }
+type FakePr = { sha: string; committedAt: number; reviews: Review[]; pendingAt?: number }
 
 function fake(prs: Record<number, FakePr>, order: number[]) {
   const controller = new AbortController()
+  const stopping = new AbortController()
   const sleeps: number[] = []
+  const sleepSignals: AbortSignal[] = []
+  let onSleep = () => controller.abort()
   const searches: string[] = []
   const reviewed: number[] = []
   const reviewCalls: string[] = []
@@ -27,6 +30,10 @@ function fake(prs: Record<number, FakePr>, order: number[]) {
     reviewsBy: async (_repo: unknown, number: number) => {
       reviewCalls.push(`reviews ${number}`)
       return prs[number]!.reviews
+    },
+    pendingReview: async (_repo: unknown, number: number) => {
+      const at = prs[number]!.pendingAt
+      return at === undefined ? undefined : { id: 2, body: '', lastActivityAt: at, commentCount: 1 }
     },
   }
   const submit = (number: number, body = '**🤖 Rowebotic Review ✨**\n\nNo issues found.') => {
@@ -45,13 +52,17 @@ function fake(prs: Record<number, FakePr>, order: number[]) {
     })),
     log: text => logs.push(text),
     signal: controller.signal,
+    stopping: stopping.signal,
     now: () => now,
-    sleep: async ms => { sleeps.push(ms); controller.abort() },
+    sleep: async (ms, signal) => { sleeps.push(ms); sleepSignals.push(signal); onSleep() },
   })
   return {
     watcher,
     sleeps,
+    sleepSignals,
+    setOnSleep: (fn: () => void) => (onSleep = fn),
     controller,
+    stopping,
     searches,
     reviewed,
     reviewCalls,
@@ -100,12 +111,23 @@ describe('Watcher', () => {
     assert.equal(t.logs.filter(l => l.includes('older than 5 days')).length, 1)
   })
 
-  it('fails on a pending review and cools that PR down while others continue', async () => {
-    const pending: Review = { id: 2, user: { login: 'me' }, state: 'PENDING', body: '', submitted_at: null, commit_id: 'a1', html_url: '' }
-    const t = fake({ 1: { sha: 'a1', committedAt: recent, reviews: [pending] }, 2: { sha: 'b1', committedAt: recent, reviews: [] } }, [1, 2])
+  const pending: Review = { id: 2, user: { login: 'me' }, state: 'PENDING', body: '', submitted_at: null, commit_id: 'a1', html_url: '' }
+
+  it('fails on a recently updated pending review and cools that PR down while others continue', async () => {
+    const t = fake({
+      1: { sha: 'a1', committedAt: recent, reviews: [pending], pendingAt: NOW - STALE_PENDING_MS + 60_000 },
+      2: { sha: 'b1', committedAt: recent, reviews: [] },
+    }, [1, 2])
     assert.equal(await t.watcher.reviewBatch(), true)
-    assert.ok(t.logs.some(line => line.includes('pending review')))
+    assert.ok(t.logs.some(line => line.includes('PR #1: a pending review was updated 14 min ago')))
+    assert.equal(t.watcher.nextReviewAt.get(1), NOW + INTERVAL_MS)
     assert.deepEqual(t.reviewed, [2])
+  })
+
+  it('selects a PR whose pending review has been idle for 15 minutes', async () => {
+    const t = fake({ 1: { sha: 'a1', committedAt: recent, reviews: [pending], pendingAt: NOW - STALE_PENDING_MS } }, [1])
+    assert.equal(await t.watcher.reviewBatch(), true)
+    assert.deepEqual(t.reviewed, [1])
   })
 
   it('cools down a failed review and a head with only an unrelated review', async () => {
@@ -226,4 +248,39 @@ it('waits until the latest reset across batch usage errors', async () => {
   t.setOnReview(number => { throw new UsageLimitError('limit', NOW + number * 1000) })
   await t.watcher.run()
   assert.deepEqual(t.sleeps, [62_000])
+})
+
+describe('soft stop', () => {
+  it('makes no search once stopping', async () => {
+    const t = fake({ 1: { sha: 'a', committedAt: recent, reviews: [] } }, [1])
+    t.stopping.abort()
+    await t.watcher.run()
+    assert.deepEqual(t.searches, [])
+    assert.deepEqual(t.reviewed, [])
+  })
+
+  it('wakes from an idle sleep and polls no more', async () => {
+    const t = fake({}, [])
+    let sleeps = 0
+    t.setOnSleep(() => {
+      t.stopping.abort()
+      // Guard against a hang if the loop ignores stopping.
+      if (++sleeps > 2) t.controller.abort()
+    })
+    await t.watcher.run()
+    assert.equal(t.searches.length, 1)
+    assert.equal(t.sleepSignals[0]!.aborted, true)
+  })
+
+  it('lets a running batch finish but skips the follow-up checks', async () => {
+    const t = fake({ 1: { sha: 'a', committedAt: recent, reviews: [] } }, [1])
+    t.setOnReview(number => {
+      t.stopping.abort()
+      t.submit(number)
+    })
+    await t.watcher.run()
+    assert.deepEqual(t.reviewed, [1])
+    assert.equal(t.searches.length, 1)
+    assert.deepEqual(t.reviewCalls, ['reviews 1'])
+  })
 })

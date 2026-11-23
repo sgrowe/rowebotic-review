@@ -146,6 +146,39 @@ export class GitHub {
     return threads
   }
 
+  /** The account's own pending review on a PR. GitHub shows pending reviews only to their author. */
+  async pendingReview(repo: Repo, number: number): Promise<PendingReview | undefined> {
+    const query = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviews(states: PENDING, first: 1) {
+        nodes { databaseId body createdAt updatedAt comments(first: 100) { totalCount nodes { updatedAt } } }
+      }
+    }
+  }
+}`
+    return pendingReviewFrom(await this.gh<PendingReviewPage>([
+      'api', 'graphql', '-f', `query=${query}`, '-f', `owner=${repo.owner}`, '-f', `name=${repo.name}`, '-F', `number=${number}`,
+    ]))
+  }
+
+  /**
+   * Clears an abandoned pending review so a new one can be created: submits it as-is, or deletes it
+   * when it has neither comments nor a body. The submitted body has no Rowebotic heading, so it never
+   * counts as a review of the head. A non-empty draft body is kept above the note.
+   */
+  async flushPendingReview(repo: Repo, number: number, pending: PendingReview): Promise<'submitted' | 'deleted'> {
+    const endpoint = `repos/${repoSlug(repo)}/pulls/${number}/reviews/${pending.id}`
+    if (!pending.commentCount && !pending.body.trim()) {
+      await run('gh', ['api', '--hostname', 'github.com', '-X', 'DELETE', endpoint], { cwd: this.cwd, signal: this.signal })
+      return 'deleted'
+    }
+    await run('gh', [
+      'api', '--hostname', 'github.com', '-X', 'POST', `${endpoint}/events`, '-f', 'event=COMMENT', '-f', `body=${pending.body.trim() ? `${pending.body.trim()}\n\n${INTERRUPTED_REVIEW_BODY}` : INTERRUPTED_REVIEW_BODY}`,
+    ], { cwd: this.cwd, signal: this.signal })
+    return 'submitted'
+  }
+
   async headCommittedAt(repo: Repo, sha: string): Promise<number> {
     const commit = await this.api<{ commit: { committer: { date: string } | null } }>(`repos/${repoSlug(repo)}/commits/${encodeURIComponent(sha)}`)
     return Date.parse(commit.commit.committer?.date ?? '')
@@ -156,6 +189,39 @@ export class GitHub {
     const prs = await this.gh<{ number: number }[]>(['pr', 'list', '--repo', repoSlug(repo), '--state', 'open', '--search', search, '--limit', '1000', '--json', 'number'])
     return prs.map(pr => pr.number)
   }
+}
+
+/** A pending review idle for this long is treated as abandoned, e.g. by a run killed mid-post. */
+export const STALE_PENDING_MS = 15 * 60_000
+export const INTERRUPTED_REVIEW_BODY = 'Comments from an interrupted review.'
+
+export type PendingReview = { id: number; body: string; lastActivityAt: number; commentCount: number }
+
+export type PendingReviewPage = {
+  data: {
+    repository: {
+      pullRequest: {
+        reviews: {
+          nodes: { databaseId: number; body: string; createdAt: string; updatedAt: string; comments: { totalCount: number; nodes: { updatedAt: string }[] } }[]
+        }
+      }
+    }
+  }
+}
+
+export function pendingReviewFrom(page: PendingReviewPage): PendingReview | undefined {
+  const node = page.data.repository.pullRequest.reviews.nodes[0]
+  if (!node) return undefined
+  const times = [node.createdAt, node.updatedAt, ...node.comments.nodes.map(comment => comment.updatedAt)].map(Date.parse)
+  return { id: node.databaseId, body: node.body, lastActivityAt: Math.max(...times), commentCount: node.comments.totalCount }
+}
+
+/** Why a pending review still blocks a new review, or undefined once it is stale. */
+export function pendingReviewBlocker(pending: PendingReview | undefined, now: number): string | undefined {
+  if (!pending) return undefined
+  const idle = now - pending.lastActivityAt
+  if (idle >= STALE_PENDING_MS) return undefined
+  return `a pending review was updated ${Math.floor(Math.max(0, idle) / 60_000)} min ago; waiting until it has been idle for ${STALE_PENDING_MS / 60_000} min`
 }
 
 export function isSubmittedRoweboticReview(review: Review): boolean {

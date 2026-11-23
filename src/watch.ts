@@ -3,7 +3,7 @@
 
 import { setTimeout as sleep } from 'node:timers/promises'
 import { AuthError } from './auth.ts'
-import { type GitHub, hasRoweboticReview, isSubmittedRoweboticReview, type Repo, type PullRequest } from './github.ts'
+import { type GitHub, hasRoweboticReview, isSubmittedRoweboticReview, pendingReviewBlocker, type Repo, type PullRequest } from './github.ts'
 import { UsageLimitError } from './model.ts'
 
 export const INTERVAL_MS = 3 * 60 * 1000
@@ -18,13 +18,15 @@ export function searchQuery(base: string, now: number): string {
 }
 
 export type WatchDeps = {
-  github: Pick<GitHub, 'search' | 'pullRequest' | 'headCommittedAt' | 'reviewsBy'>
+  github: Pick<GitHub, 'search' | 'pullRequest' | 'headCommittedAt' | 'reviewsBy' | 'pendingReview'>
   repo: Repo
   login: string
   search: string
   reviewBatch: (prs: PullRequest[], signal: AbortSignal) => Promise<PromiseSettledResult<{ headSha: string }>[]>
   log: (text: string) => void
   signal: AbortSignal
+  /** Soft stop: start no new searches or batches, but let a running batch finish. */
+  stopping?: AbortSignal
   idleDelay?: (now: number) => number
   onStatus?: (status: { phase: 'polling' | 'idle' | 'quota wait' | 'retrying'; at: number; nextPollAt?: number }) => void
   now?: () => number
@@ -46,7 +48,8 @@ export class Watcher {
 
   /** Select and finish one batch before allowing another search. */
   async reviewBatch(): Promise<boolean> {
-    const { github, repo, login, log, signal } = this.#deps
+    const { github, repo, login, log, signal, stopping } = this.#deps
+    if (stopping?.aborted) return false
     const cutoff = this.#now() - RECENT_MS
     const numbers = await github.search(repo, searchQuery(this.#deps.search, this.#now()))
     const selected: PullRequest[] = []
@@ -56,6 +59,7 @@ export class Watcher {
     }
     for (const number of new Set(numbers)) {
       signal.throwIfAborted()
+      if (stopping?.aborted) return false
       if ((this.nextReviewAt.get(number) ?? 0) > this.#now()) continue
       try {
         const pr = await github.pullRequest(repo, number)
@@ -70,7 +74,9 @@ export class Watcher {
         const reviews = await github.reviewsBy(repo, number, login)
         if (hasRoweboticReview(pr.head.sha, reviews)) continue
         if (reviews.some(review => review.state === 'PENDING')) {
-          throw new Error('a pending review already exists; submit or discard it manually')
+          // A stale one is flushed by the review run before it posts.
+          const blocker = pendingReviewBlocker(await github.pendingReview(repo, number), this.#now())
+          if (blocker) throw new Error(blocker)
         }
         const previouslyReviewed = reviews.some(isSubmittedRoweboticReview)
         if (previouslyReviewed && committedAt > this.#now() - DEBOUNCE_MS) continue
@@ -81,10 +87,12 @@ export class Watcher {
         retry(number, error)
       }
     }
-    if (!selected.length) return false
+    if (!selected.length || stopping?.aborted) return false
     for (const pr of selected) log(`PR #${pr.number}: reviewing ${pr.head.ref} at ${pr.head.sha.slice(0, 7)}.`)
     const results = await this.#deps.reviewBatch(selected, signal)
     signal.throwIfAborted()
+    // Stopping: the process is about to exit, and the next revision re-checks every PR.
+    if (stopping?.aborted) return true
     const fatal: (UsageLimitError | AuthError)[] = []
     for (const [index, pr] of selected.entries()) {
       try {
@@ -121,24 +129,26 @@ export class Watcher {
   }
 
   async run(): Promise<void> {
-    const { log, signal, onStatus } = this.#deps
+    const { log, signal, stopping, onStatus } = this.#deps
+    const halt = stopping ? AbortSignal.any([signal, stopping]) : signal
     log(`Watching ${this.#deps.repo.owner}/${this.#deps.repo.name} as ${this.#deps.login}: ${this.#deps.search}`)
-    while (!signal.aborted) {
+    while (!halt.aborted) {
       const pollStarted = this.#now()
       onStatus?.({ phase: 'polling', at: pollStarted })
       let phase: 'idle' | 'retrying' = 'idle'
       let message = 'No PRs ready.'
       try {
         if (await this.reviewBatch()) continue
+        if (halt.aborted) return
       } catch (error) {
-        if (signal.aborted) return
+        if (halt.aborted) return
         if (error instanceof AuthError) throw error
         if (error instanceof UsageLimitError) {
           const wait = error.resetsAt ? Math.max(0, error.resetsAt - this.#now()) + 60_000 : UNKNOWN_RESET_WAIT_MS
           const nextPollAt = this.#now() + wait
           onStatus?.({ phase: 'quota wait', at: this.#now(), nextPollAt })
           log(`Usage limit reached: ${error.message}. Sleeping until ${new Date(nextPollAt).toLocaleString()}.`)
-          await this.#sleep(wait, signal).catch(() => {})
+          await this.#sleep(wait, halt).catch(() => {})
           continue
         }
         phase = 'retrying'
@@ -148,7 +158,7 @@ export class Watcher {
       const wait = this.#deps.idleDelay?.(now) ?? IDLE_MS
       onStatus?.({ phase, at: now, nextPollAt: now + wait })
       log(`${message} Checking again in ${Math.ceil(wait / 1000)} seconds.`)
-      await this.#sleep(wait, signal).catch(() => {})
+      await this.#sleep(wait, halt).catch(() => {})
     }
   }
 }

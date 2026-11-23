@@ -264,6 +264,44 @@ it('aborts launch waits and drains active reviews before closing shared resource
   assert.equal(closed, true)
 })
 
+it('stops launching on a soft stop but lets launched reviews finish', async () => {
+  const stopping = new AbortController()
+  const starts: number[] = []
+  let closed = false
+  let finish!: () => void
+  const active = new Promise<void>(resolve => { finish = resolve })
+  const batch = runBatch([1, 2, 3], {
+    signal: new AbortController().signal,
+    stopping: stopping.signal,
+    prepare: async () => {}, start: async () => ({}),
+    review: async item => { starts.push(item); await active; return item },
+    close: async () => { closed = true },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  stopping.abort()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(starts, [1])
+  assert.equal(closed, false)
+  finish()
+  const results = await batch
+  assert.deepEqual(results.map(r => r.status), ['fulfilled', 'rejected', 'rejected'])
+  assert.match(String((results[1] as PromiseRejectedResult).reason), /shutting down/)
+  assert.equal(closed, true)
+})
+
+it('skips preparation entirely when stopping before the batch starts', async () => {
+  const stopping = new AbortController()
+  stopping.abort()
+  const calls: string[] = []
+  const results = await runBatch([1, 2], {
+    stopping: stopping.signal,
+    prepare: async () => { calls.push('prepare') }, start: async () => { calls.push('start') },
+    review: async item => item, close: async () => { calls.push('close') },
+  })
+  assert.deepEqual(calls, [])
+  assert.deepEqual(results.map(r => r.status), ['rejected', 'rejected'])
+})
+
 
 describe('createReviewFunctions', () => {
   // Each reviewer finishes when the test calls `finish(key)`.
@@ -316,6 +354,23 @@ describe('createReviewFunctions', () => {
     await t.finish('slow', { ok: false, findings: [], error: 'timed out' })
     assert.deepEqual(await t.wait(), { finished: [{ key: 'slow', ok: false, findings: [], error: 'timed out' }], running: [] })
     assert.deepEqual(await t.wait(), { finished: [], running: [] })
+  })
+
+  it('refuses new reviewers on a soft stop and ends the run unposted', async () => {
+    const stopping = new AbortController()
+    const stopped: Error[] = []
+    let finishA!: () => void
+    const r = createReviewFunctions({
+      concerns, log: () => {}, stopping: stopping.signal, stopRun: error => stopped.push(error),
+      run: request => new Promise<ReviewResult>(resolve => { finishA = () => resolve({ key: request.key, ok: true, findings: [], error: null }) }),
+    })
+    const call = (name: string, args = {}) => r.functions.find(f => f.name === name)!.call(args, new AbortController().signal)
+    await call('start_review', { key: 'a', concern: 'bugs', scope: 'all', intent: 'i' })
+    stopping.abort()
+    await assert.rejects(call('start_review', { key: 'b', concern: 'bugs', scope: 'all', intent: 'i' }), /shutting down/)
+    assert.match(String(stopped[0]), /shutting down/)
+    finishA()
+    assert.deepEqual(await call('wait_reviews'), { finished: [{ key: 'a', ok: true, findings: [], error: null }], running: [] })
   })
 
   it('turns a rejected reviewer into a failed result and keeps delivered results for review_results', async () => {

@@ -20,7 +20,7 @@ function log(text: string) {
   console.log(`${new Date().toLocaleTimeString('en-GB', { hour12: false })} ${text}`)
 }
 
-async function main(argv: string[], signal: AbortSignal): Promise<number> {
+async function main(argv: string[], signal: AbortSignal, stopping: AbortSignal): Promise<number> {
   const [command, ...rest] = argv
   const root = process.cwd()
   switch (command) {
@@ -33,7 +33,7 @@ async function main(argv: string[], signal: AbortSignal): Promise<number> {
         console.error(usage)
         return 2
       }
-      const outcome = await reviewPr({ root, prNumber: number, signal })
+      const outcome = await reviewPr({ root, prNumber: number, signal, stopping })
       return outcome.result.reviewPosted ? 0 : 1
     }
     case 'serve': {
@@ -42,7 +42,7 @@ async function main(argv: string[], signal: AbortSignal): Promise<number> {
         return 2
       }
       const { serve } = await import('./serve.ts')
-      await serve(log, signal)
+      await serve(log, signal, stopping)
       return 0
     }
     case 'watch': {
@@ -61,13 +61,14 @@ async function main(argv: string[], signal: AbortSignal): Promise<number> {
         repo,
         login: me,
         search: project.search,
-        reviewBatch: (prs, reviewSignal) => reviewBatch({ root, prs, signal: reviewSignal, model }),
+        reviewBatch: (prs, reviewSignal) => reviewBatch({ root, prs, signal: reviewSignal, stopping, model }),
         log,
         signal,
+        stopping,
         idleDelay: project.idleDelay,
       })
       await watcher.run()
-      return signal.aborted ? 130 : 0
+      return signal.aborted || stopping.aborted ? 130 : 0
     }
     default:
       console.error(usage)
@@ -75,21 +76,30 @@ async function main(argv: string[], signal: AbortSignal): Promise<number> {
   }
 }
 
+// The first signal is a soft stop: nothing new starts, but in-flight reviews carry on. Cloud Run
+// sends SIGTERM about 10 seconds before SIGKILL, so a review that is nearly done can still post.
+const stopping = new AbortController()
 const controller = new AbortController()
 let stops = 0
 for (const name of ['SIGINT', 'SIGTERM'] as const) {
   process.on(name, () => {
     stops++
-    if (stops > 1) process.exit(130)
-    log('Stopping (Ctrl-C again to force).')
-    controller.abort(new Error('stopped by user'))
+    if (stops === 1) {
+      log('Stopping: no new work; in-flight reviews continue (Ctrl-C again to abort).')
+      stopping.abort(new Error('stopping'))
+    } else if (stops === 2) {
+      log('Aborting (Ctrl-C again to force).')
+      controller.abort(new Error('stopped by user'))
+    } else {
+      process.exit(130)
+    }
   })
 }
 
 try {
-  process.exitCode = await main(process.argv.slice(2), controller.signal)
+  process.exitCode = await main(process.argv.slice(2), controller.signal, stopping.signal)
 } catch (error) {
-  if (controller.signal.aborted) {
+  if (controller.signal.aborted || stopping.signal.aborted) {
     process.exitCode = 130
   } else if (error instanceof UsageLimitError) {
     console.error(`Usage limit reached: ${error.message}${error.resetsAt ? `. Resets at ${new Date(error.resetsAt).toLocaleString()}` : ''}`)

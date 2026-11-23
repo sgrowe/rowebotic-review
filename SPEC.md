@@ -156,6 +156,8 @@ Reviewer delegation is non-blocking, so the orchestrator verifies early reviewer
 
 The orchestrator posts the review itself: create a pending review on the head SHA, add one comment per finding, submit with `COMMENT`. If a pending review already exists it stops without deleting it.
 
+GitHub allows one pending review per account per PR. Before fetching context, the run looks up the account's pending review (GraphQL, for timestamps). One with activity in the last 15 minutes fails the run, because it may be someone's draft. An older one is treated as abandoned, usually by a run killed mid-post. The run submits it as-is with the body `Comments from an interrupted review.`, keeping any draft body above that note. It deletes it only if it has neither comments nor a body. Then it reviews as normal. The flushed body has no Rowebotic heading, so it never counts as a review of the head.
+
 A reviewer's first message is its concern body followed by the change ID, `from`, `to`, path scope and intent. Its instructions are the same for every reviewer.
 
 ### Structured final output
@@ -197,12 +199,13 @@ Batch scheduling, in-process:
 
 - Search: the settings string + ` updated:>=<now − 5 days, ISO> sort:created-asc`, with `--state open --limit 1000`, recomputed every scan.
 - Skip a PR whose head commit is older than 5 days (logged once per head), before fetching its reviews.
-- Skip it if the watcher account has a submitted review for the head SHA whose body starts with the Rowebotic Review heading. Fail it if the account has a pending review.
+- Skip it if the watcher account has a submitted review for the head SHA whose body starts with the Rowebotic Review heading. Fail it if the account has a pending review with activity in the last 15 minutes. An older one doesn't block, because the run flushes it.
 - Select up to five eligible PRs (larger batches hit Codex 429 rate limits), fetch and prepare once, run reviews concurrently, and await all reviews and cleanup before searching again. Verify submitted reviews against captured head SHAs; new commits arriving during review are allowed.
 - First Rowebotic reviews qualify immediately within the age restrictions. PRs previously reviewed by Rowebotic require an unreviewed head commit at least two minutes old (commit timestamp, not push time).
 - Three-minute cooldown after individual errors only. Sleep 90 seconds when nothing qualifies or a scan/fetch fails.
 - Account failures leave peers running. After the batch settles, `AuthError` stops the watcher; otherwise usage limits sleep until the latest required reset (+1 minute; 1 hour if unknown).
-- Ctrl-C aborts the active batch and the watcher. A second Ctrl-C exits at once.
+- The first SIGINT or SIGTERM is a soft stop. There are no new searches, batches, PR launches, orchestrators or reviewers. A `start_review` call then raises and ends that run without posting, because a partial review would mark the head reviewed. A run that is already posting can finish. Work already running continues, and the process exits once it settles. Cloud Run sends SIGKILL about 10 seconds after SIGTERM, so a deploy usually still cuts a batch short. The next revision re-reviews those PRs, and a pending review left behind is flushed once it has been idle for 15 minutes.
+- A second signal aborts the active batch and the watcher. A third exits at once.
 - Cooldowns live in memory only. Run one watcher per repo.
 
 The first PR starts immediately after preparation and resource startup. Subsequent PRs launch one second apart while previous reviews continue. Cancellation interrupts launch delays and prevents remaining PRs from starting, then drains active reviews before cleanup. Each batch shares MCP connections and a Monty pool capped at `min(60, 9 × batchSize)`. Agents retain separate interpreter sessions, histories, turn state, cancellation, and transcripts. Worker queue time counts toward reviewer deadlines. The watcher shares a token store for single-flight OAuth refresh. Batch ID, size, and pool capacity are recorded for cache comparisons. Each model's reviewer startup gate runs per PR.
