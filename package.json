@@ -20,7 +20,7 @@
     "@google-cloud/storage": "^9.0.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@pydantic/monty": "^1.6.0",
-    "openai": "^7.59.0",
+    "openai": "^7.62.0",
     "pg": "^8.23.1"
   },
   "devDependencies": {
